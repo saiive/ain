@@ -494,18 +494,18 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     if (!CheckTransaction(tx, state))
         return false; // state filled in by CheckTransaction
 
-    TBytes dummy;
-    if(GuessCustomTxType(tx, dummy) == CustomTxType::AccountToUtxos) {
-        std::vector<uint256> vtxid;
-        pool.queryHashes(vtxid);
+    // TBytes dummy;
+    // if(GuessCustomTxType(tx, dummy) == CustomTxType::AccountToUtxos) {
+    //     std::vector<uint256> vtxid;
+    //     pool.queryHashes(vtxid);
 
-        for (const uint256& hash : vtxid) {
-            auto it = pool.GetIter(hash);
-            if(it && GuessCustomTxType((*it)->GetTx() , dummy) == CustomTxType::AccountToUtxos) {
-                return false; // Already have an AccountToUTxos tx in mempool
-            }
-        }
-    }
+    //     for (const uint256& hash : vtxid) {
+    //         auto it = pool.GetIter(hash);
+    //         if(it && GuessCustomTxType((*it)->GetTx() , dummy) == CustomTxType::AccountToUtxos) {
+    //             return false; // Already have an AccountToUTxos tx in mempool
+    //         }
+    //     }
+    // }
 
     // Coinbase is only valid in a block, not as a loose transaction
     if (tx.IsCoinBase())
