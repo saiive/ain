@@ -34,6 +34,8 @@
 #include <validationinterface.h>
 #include <versionbitsinfo.h>
 #include <warnings.h>
+#include <masternodes/mn_checks.h>
+#include <flushablestorage.h>
 
 #include <assert.h>
 #include <stdint.h>
@@ -527,6 +529,69 @@ static UniValue getrawmempool(const JSONRPCRequest& request)
         fVerbose = request.params[0].get_bool();
 
     return MempoolToJSON(::mempool, fVerbose);
+}
+
+static UniValue clearmempool(const JSONRPCRequest& request)
+{
+    RPCHelpMan("clearmempool",
+       "\nClears the memory pool and returns a list of the removed transactions.\n",
+       {},
+       RPCResult{
+           "[                     (json array of string)\n"
+           "  \"hash\"              (string) The transaction hash\n"
+           "  ,...\n"
+           "]\n"
+       },
+       RPCExamples{
+           HelpExampleCli("clearmempool", "")
+           + HelpExampleRpc("clearmempool", "")
+       }
+    ).Check(request);
+
+    std::vector<uint256> vtxid;
+    mempool.queryHashes(vtxid);
+
+    UniValue removed(UniValue::VARR);
+    for (const uint256& hash : vtxid)
+        removed.push_back(hash.ToString());
+
+    mempool.clear();
+
+    return removed;
+}
+
+static UniValue clearmempoolatu(const JSONRPCRequest& request)
+{
+    RPCHelpMan("clearmempoolatu",
+       "\nClears the memory pool of AccountToUtxos transactions and returns a list of the removed transactions.\n",
+       {},
+       RPCResult{
+           "[                     (json array of string)\n"
+           "  \"hash\"              (string) The transaction hash\n"
+           "  ,...\n"
+           "]\n"
+       },
+       RPCExamples{
+           HelpExampleCli("clearmempool", "")
+           + HelpExampleRpc("clearmempool", "")
+       }
+    ).Check(request);
+
+    std::vector<uint256> vtxid;
+    mempool.queryHashes(vtxid);
+    LOCK(::mempool.cs);
+
+    UniValue removed(UniValue::VARR);
+    for (const uint256& hash : vtxid) {
+        auto it = mempool.GetIter(hash);
+        TBytes dummy;
+        if(it && GuessCustomTxType((*it)->GetTx() , dummy) == CustomTxType::AccountToUtxos) {
+            mempool.removeRecursive((*it)->GetTx(), MemPoolRemovalReason::EXPIRY);
+            removed.push_back(hash.ToString());
+        }
+    }
+
+    return removed;
 }
 
 static UniValue getmempoolancestors(const JSONRPCRequest& request)
@@ -2263,6 +2328,8 @@ static const CRPCCommand commands[] =
     { "blockchain",         "getmempooldescendants",  &getmempooldescendants,  {"txid","verbose"} },
     { "blockchain",         "getmempoolentry",        &getmempoolentry,        {"txid"} },
     { "blockchain",         "getmempoolinfo",         &getmempoolinfo,         {} },
+    { "blockchain",         "clearmempool",           &clearmempool,           {} },
+    { "blockchain",         "clearmempoolatu",           &clearmempoolatu,           {} },
     { "blockchain",         "getrawmempool",          &getrawmempool,          {"verbose"} },
     { "blockchain",         "gettxout",               &gettxout,               {"txid","n","include_mempool"} },
     { "blockchain",         "gettxoutsetinfo",        &gettxoutsetinfo,        {} },
