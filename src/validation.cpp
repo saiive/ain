@@ -2353,6 +2353,7 @@ bool CChainState::FlushStateToDisk(
     FlushStateMode mode,
     int nManualPruneHeight)
 {
+    LogPrintf("Function %s: start\n", __func__);
     int64_t nMempoolUsage = mempool.DynamicMemoryUsage();
     LOCK(cs_main);
     assert(this->CanFlushToDisk());
@@ -2391,8 +2392,10 @@ bool CChainState::FlushStateToDisk(
         int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
         int64_t cacheSize = CoinsTip().DynamicMemoryUsage();
         int64_t nTotalSpace = nCoinCacheUsage + std::max<int64_t>(nMempoolSizeMax - nMempoolUsage, 0);
+
         // The cache is large and we're within 10% and 10 MiB of the limit, but we have time now (not in the middle of a block processing).
         bool fCacheLarge = mode == FlushStateMode::PERIODIC && cacheSize > std::max((9 * nTotalSpace) / 10, nTotalSpace - MAX_BLOCK_COINSDB_USAGE * 1024 * 1024);
+        LogPrintf("nMempoolSizeMax %d, cacheSize: %d, nTotalSpace: %d, fCacheLarge: %d\n", nMempoolSizeMax, cacheSize, nTotalSpace, fCacheLarge);
         // The cache is over the limit, we have to write now.
         bool fCacheCritical = mode == FlushStateMode::IF_NEEDED && cacheSize > nTotalSpace;
         // It's been a while since we wrote the block index to disk. Do this frequently, so we don't need to redownload after a crash.
@@ -2432,7 +2435,9 @@ bool CChainState::FlushStateToDisk(
                 UnlinkPrunedFiles(setFilesToPrune);
             nLastWrite = nNow;
         }
-        bool fMemoryCacheLarge = fDoFullFlush || (mode == FlushStateMode::PERIODIC && pcustomcsview->SizeEstimate() > (nDefaultDbCache << 16));
+        const auto customViewSize = pcustomcsview->SizeEstimate();
+        LogPrintf("mode %d, cacheSize: %d, customViewSize: %d\n", static_cast<int>(mode), cacheSize, (int)customViewSize);
+        bool fMemoryCacheLarge = fDoFullFlush || (mode == FlushStateMode::PERIODIC && customViewSize > (nDefaultDbCache << 16));
         // Flush best chain related state. This can only be done if the blocks / block index write was also done.
         if (fMemoryCacheLarge && !CoinsTip().GetBestBlock().IsNull()) {
             // Flush view first to estimate size on disk later
@@ -2462,10 +2467,12 @@ bool CChainState::FlushStateToDisk(
     } catch (const std::runtime_error& e) {
         return AbortNode(state, std::string("System error while flushing: ") + e.what());
     }
+    LogPrintf("Function %s: end\n", __func__);
     return true;
 }
 
 void CChainState::ForceFlushStateToDisk() {
+    LogPrintf("Function %s: start\n", __func__);
     CValidationState state;
     const CChainParams& chainparams = Params();
     if (!this->FlushStateToDisk(chainparams, state, FlushStateMode::ALWAYS)) {

@@ -232,6 +232,7 @@ void Shutdown(InitInterfaces& interfaces)
         DumpMempool(::mempool);
     }
 
+    LogPrintf("%s: fFeeEstimatesInitialized %d\n", __func__, fFeeEstimatesInitialized);
     if (fFeeEstimatesInitialized)
     {
         ::feeEstimator.FlushUnconfirmed();
