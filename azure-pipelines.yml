@@ -11,9 +11,11 @@ resources:
 variables:
   # Container registry service connection established during pipeline creation
   dockerRegistryServiceConnection: '4813fb62-56ab-4b1f-ae03-01b66e04bf52'
+  imageRepositoryBase: 'defichain-base'
   imageRepository: 'defichain'
   containerRegistry: 'defiwallet.azurecr.io'
-  dockerfilePath: 'contrib/dockerfiles/x86_64-pc-linux-gnu.dockerfile'
+  dockerfilePathBase: 'contrib/dockerfiles/x86_64-pc-linux-gnu.dockerfile'
+  dockerfilePath: 'contrib/dockerfiles/dockerhub/p3_x86_64-pc-linux-gnu.dockerfile'
   tag: '$(Build.BuildId)'
   
   # Agent VM image name
@@ -29,7 +31,18 @@ stages:
       vmImage: $(vmImageName)
     steps:
     - task: Docker@2
-      displayName: Build and push an image to container registry
+      displayName: Build base image
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepositoryBase)
+        dockerfile: $(dockerfilePathBase)
+        buildContext: $(Build.SourcesDirectory)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+          latest
+    - task: Docker@2
+      displayName: Build defid image
       inputs:
         command: buildAndPush
         repository: $(imageRepository)
