@@ -1,4 +1,4 @@
-FROM defiwallet.azurecr.io/defichainbase:latest as dh-build
+FROM defiwallet.azurecr.io/defichain-base:latest as dh-build
 
 FROM debian:10-slim
 ENV PATH=/app/bin:$PATH
