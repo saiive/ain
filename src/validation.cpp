@@ -2548,15 +2548,20 @@ void static UpdateTip(const CBlockIndex* pindexNew, const CChainParams& chainPar
         if (nUpgraded > 0)
             AppendWarning(warningMessages, strprintf(_("%d of last 100 blocks have unexpected version").translated, nUpgraded));
     }
-    LogPrintf("%s: new best=%s height=%d version=0x%08x log2_work=%.8g tx=%lu date='%s' progress=%f cache=%.1fMiB(%utxo)", __func__, /* Continued */
-      pindexNew->GetBlockHash().ToString(), pindexNew->nHeight, pindexNew->nVersion,
-      log(pindexNew->nChainWork.getdouble())/log(2.0), (unsigned long)pindexNew->nChainTx,
-      FormatISO8601DateTime(pindexNew->GetBlockTime()),
-      GuessVerificationProgress(chainParams.TxData(), pindexNew), ::ChainstateActive().CoinsTip().DynamicMemoryUsage() * (1.0 / (1<<20)), ::ChainstateActive().CoinsTip().GetCacheSize());
-    if (!warningMessages.empty())
-        LogPrintf(" warning='%s'", warningMessages); /* Continued */
-    LogPrintf("\n");
 
+    static int64_t lastTipTime = 0;
+    auto currentTime = GetSystemTimeInSeconds();
+    if (!warningMessages.empty() || !::ChainstateActive().IsInitialBlockDownload() || lastTipTime < currentTime - 20) {
+        lastTipTime = currentTime;
+        LogPrintf("%s: new best=%s height=%d version=0x%08x log2_work=%.8g tx=%lu date='%s' progress=%f cache=%.1fMiB(%utxo)", __func__, /* Continued */
+            pindexNew->GetBlockHash().ToString(), pindexNew->nHeight, pindexNew->nVersion,
+            log(pindexNew->nChainWork.getdouble())/log(2.0), (unsigned long)pindexNew->nChainTx,
+            FormatISO8601DateTime(pindexNew->GetBlockTime()),
+            GuessVerificationProgress(chainParams.TxData(), pindexNew), ::ChainstateActive().CoinsTip().DynamicMemoryUsage() * (1.0 / (1<<20)), ::ChainstateActive().CoinsTip().GetCacheSize());
+        if (!warningMessages.empty())
+            LogPrintf(" warning='%s'", warningMessages); /* Continued */
+        LogPrintf("\n");
+    }
 }
 
 /** Disconnect m_chain's tip.
@@ -2960,6 +2965,18 @@ bool CChainState::ActivateBestChainStep(CValidationState& state, const CChainPar
                         InvalidChainFound(vpindexToConnect.front());
                     }
                     state = CValidationState();
+                    if (pindexConnect == pindexMostWork) {
+                        // NOTE: Invalidate blocks back to last checkpoint
+                        auto &checkpoints = chainparams.Checkpoints().mapCheckpoints;
+                        auto it = checkpoints.lower_bound(pindexConnect->nHeight);
+                        if (it != checkpoints.begin()) {
+                            auto index = LookupBlockIndex((--it)->second);
+                            if (InvalidateBlock(state, chainparams, index)) {
+                                state.Invalid(ValidationInvalidReason::NONE, true, UINT_MAX);
+                                fBlocksDisconnected = true;
+                            }
+                        }
+                    }
                     fInvalidFound = true;
                     fContinue = false;
                     break;
@@ -2997,7 +3014,7 @@ bool CChainState::ActivateBestChainStep(CValidationState& state, const CChainPar
     return true;
 }
 
-static void NotifyHeaderTip() LOCKS_EXCLUDED(cs_main) {
+static bool NotifyHeaderTip() LOCKS_EXCLUDED(cs_main) {
     bool fNotify = false;
     bool fInitialBlockDownload = false;
     static CBlockIndex* pindexHeaderOld = nullptr;
@@ -3016,6 +3033,7 @@ static void NotifyHeaderTip() LOCKS_EXCLUDED(cs_main) {
     if (fNotify) {
         uiInterface.NotifyHeaderTip(fInitialBlockDownload, pindexHeader);
     }
+    return fNotify;
 }
 
 static void LimitValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main) {
@@ -3173,6 +3191,14 @@ bool CChainState::ActivateBestChain(CValidationState &state, const CChainParams&
                     // Wipe cache, we may need another branch now.
                     pindexMostWork = nullptr;
                 }
+
+                // Special case to catch checkpoint block invalidation
+                if (state.GetRejectCode() == UINT_MAX) {
+                    starting_tip = m_chain.Tip();
+                    state = CValidationState();
+                    continue;
+                }
+
                 pindexNewTip = m_chain.Tip();
 
                 for (const PerBlockConnectTrace& trace : connectTrace.GetBlocksConnected()) {
@@ -3836,8 +3862,21 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader& block, CValidationState
             pindex = miSelf->second;
             if (ppindex)
                 *ppindex = pindex;
-            if (pindex->nStatus & BLOCK_FAILED_MASK)
+            if (pindex->nStatus & BLOCK_FAILED_MASK) {
+                if (pindex->nHeight == 597925) {
+                    ResetBlockFailureFlags(pindex);
+                    auto pindexInvalid = ::ChainActive()[597915];
+                    pindexInvalid->nStatus |= BLOCK_FAILED_VALID;
+                    m_failed_blocks.insert(pindexInvalid);
+                    auto& chain = ::ChainstateActive();
+                    chain.setBlockIndexCandidates.erase(pindexInvalid);
+                    setDirtyBlockIndex.insert(pindexInvalid);
+                    InvalidChainFound(pindexInvalid);
+                } else if (pindex->nHeight == 597915) {
+                    ResetBlockFailureFlags(pindex);
+                }
                 return state.Invalid(ValidationInvalidReason::CACHED_INVALID, error("%s: block %s is marked invalid", __func__, hash.ToString()), 0, "duplicate");
+            }
             return true;
         }
 
@@ -3960,7 +3999,7 @@ bool ProcessNewBlockHeaders(const std::vector<CBlockHeader>& headers, CValidatio
             }
         }
     }
-    NotifyHeaderTip();
+    if (NotifyHeaderTip())
     {
         LOCK(cs_main);
         if (::ChainstateActive().IsInitialBlockDownload() && ppindex && *ppindex) {
