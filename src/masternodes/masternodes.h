@@ -35,10 +35,10 @@ class CTransaction;
 int GetMnActivationDelay();
 int GetMnResignDelay();
 int GetMnHistoryFrame();
-CAmount GetMnCollateralAmount();
-CAmount GetMnCreationFee(int height);
 CAmount GetTokenCollateralAmount();
+CAmount GetMnCreationFee(int height);
 CAmount GetTokenCreationFee(int height);
+CAmount GetMnCollateralAmount(int height);
 
 class CMasternode
 {
