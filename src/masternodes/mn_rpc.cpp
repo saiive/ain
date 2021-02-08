@@ -2780,13 +2780,7 @@ UniValue createpoolpair(const JSONRPCRequest& request) {
 
     CTransactionRef optAuthTx;
     std::set<CScript> auths;
-
-    if (targetHeight < Params().GetConsensus().DakotaHeight) {
-        rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, true /*needFoundersAuth*/, optAuthTx, txInputs);
-    } else {
-        auths.insert(ownerAddress);
-        rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, false /*needFoundersAuth*/, optAuthTx, txInputs);
-    }
+    rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, true /*needFoundersAuth*/, optAuthTx, txInputs);
 
     CCoinControl coinControl;
 
@@ -2877,7 +2871,6 @@ UniValue updatepoolpair(const JSONRPCRequest& request) {
 
     std::string const poolStr = trim_ws(metaObj["pool"].getValStr());
     DCT_ID poolId;
-    CScript owner;
     int targetHeight;
     {
         LOCK(cs_main);
@@ -2891,7 +2884,6 @@ UniValue updatepoolpair(const JSONRPCRequest& request) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Pool %s does not exist!", poolStr));
         }
         status = pool->status;
-        owner = pool.value().ownerAddress;
         targetHeight = ::ChainActive().Height() + 1;
     }
 
@@ -2918,12 +2910,7 @@ UniValue updatepoolpair(const JSONRPCRequest& request) {
 
     CTransactionRef optAuthTx;
     std::set<CScript> auths;
-    if (targetHeight < Params().GetConsensus().DakotaHeight) {
-        rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, true /*needFoundersAuth*/, optAuthTx, txInputs);
-    } else {
-        auths.insert(owner);
-        rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, false /*needFoundersAuth*/, optAuthTx, txInputs);
-    }
+    rawTx.vin = GetAuthInputsSmart(pwallet, rawTx.nVersion, auths, true /*needFoundersAuth*/, optAuthTx, txInputs);
 
     CDataStream metadata(DfTxMarker, SER_NETWORK, PROTOCOL_VERSION);
     metadata << static_cast<unsigned char>(CustomTxType::UpdatePoolPair)
