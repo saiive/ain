@@ -302,7 +302,7 @@ CAnchor CAnchorAuthIndex::CreateBestAnchor(CTxDestination const & rewardDest) co
                 it0Copy = it0;
                 for (uint32_t i{0}; i < quorum && it0Copy != it1; ++i, ++it0Copy) {
                     // ValidateAuth called here performs extra checks with SPV enabled.
-                    if (ValidateAuth(*it0)) {
+                    if (ValidateAuth(*it0Copy)) {
                         ++validCount;
                     }
                 }
