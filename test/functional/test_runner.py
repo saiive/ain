@@ -117,6 +117,7 @@ BASE_SCRIPTS = [
     'feature_dip1.py',
     'feature_anchors.py',
     'feature_anchorauths.py',
+    'feature_anchor_dakota.py',
     'feature_anchor_rewards.py',
     'feature_anchorauths_pruning.py',
     'feature_autoauth.py',
