@@ -14,14 +14,15 @@ from test_framework.util import assert_equal, \
     connect_nodes_bi, disconnect_nodes, wait_until
 
 from decimal import Decimal
+import time
 
 class AnchorRewardsTest (DefiTestFramework):
     def set_test_params(self):
         self.num_nodes = 3
         self.extra_args = [
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", "-anchorquorum=2"],
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", "-anchorquorum=2"],
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", "-anchorquorum=2"],
+            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", '-amkheight=0', "-dakotaheight=0"],
+            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", '-amkheight=0', "-dakotaheight=0"],
+            [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", '-amkheight=0', "-dakotaheight=0"],
         ]
         self.setup_clean_chain = True
 
@@ -32,16 +33,18 @@ class AnchorRewardsTest (DefiTestFramework):
             connect_nodes_bi(self.nodes, i, i + 1)
         self.sync_all()
 
-    def dumphashes(self, nodes=None, block = None):
-        if nodes is None:
-            nodes = range(self.num_nodes)
-        for i in nodes:
-            bl = self.nodes[i].getblockcount() if block is None else block
-            print ("Node%d: [%d] %s" % (i, bl, self.nodes[i].getblockhash(bl)))
+    # Generate on different nodes makes more MNs available for anchor teams.
+    def rotateandgenerate(self, count = 8):
+        for i in range(0, count):
+            self.nodes[i % self.num_nodes].generate(1)
 
-    def dumpheights(self):
-        print ("Heights:", self.nodes[0].getblockcount(), "\t", self.nodes[1].getblockcount(), "\t", self.nodes[2].getblockcount())
-        # pass
+    def mocktime(self, increment = 0):
+        for i in range(0, self.num_nodes):
+            self.nodes[i % self.num_nodes].set_mocktime(int(time.time() + increment))
+
+    def setlastheight(self, height):
+        for i in range(0, self.num_nodes):
+            self.nodes[int(i % self.num_nodes)].spv_setlastheight(height)
 
     def authsquorum(self, height, node=None):
         QUORUM = 2
@@ -56,13 +59,32 @@ class AnchorRewardsTest (DefiTestFramework):
     def run_test(self):
         assert_equal(len(self.nodes[0].listmasternodes()), 8)
 
-        chain0 = 17+15
-        self.nodes[0].generate(chain0)
+        self.mocktime(-(12 * 60 * 60))
+
+        anchorFrequency = 15
+
+        # Create multiple active MNs
+        self.rotateandgenerate(2 * anchorFrequency)
         self.sync_all() # important to be synced before next disconnection
+
         assert_equal(len(self.nodes[0].spv_listanchors()), 0)
+
+        # Mo anchors created yet as we need three hours depth in chain
+        assert_equal(len(self.nodes[0].spv_listanchorauths()), 0)
+
+        # Move forward three hours to create valida anchor data
+        self.mocktime(-(9 * 60 * 60))
+
+        # Does not generate desired number of blocks on first round! Loop it.
+        blockcount = 45
+        while self.nodes[0].getblockcount() < blockcount:
+            diff = blockcount - self.nodes[0].getblockcount()
+            self.rotateandgenerate(diff)
+            self.sync_all()
 
         print ("Node0: Setting anchors")
         self.nodes[0].spv_setlastheight(1)
+        self.nodes[1].spv_setlastheight(1)
         rewardAddress0 = self.nodes[0].getnewaddress("", "legacy")
         rewardAddress1 = self.nodes[0].getnewaddress("", "legacy")
 
@@ -79,11 +101,22 @@ class AnchorRewardsTest (DefiTestFramework):
             'amount': 2262303,
             'privkey': "cStbpreCo2P4nbehPXZAAM3gXXY1sAphRfEhj7ADaLx8i2BmxvEP"}],
             rewardAddress1)
+        self.nodes[1].spv_sendrawtx(txAnc0['txHex'])
+        self.nodes[1].spv_sendrawtx(txAnc1['txHex'])
 
         # just for triggering activation in regtest
         self.nodes[0].spv_setlastheight(1)
+        self.nodes[1].spv_setlastheight(1)
+        anchors = self.nodes[0].spv_listanchorspending()
+        assert_equal(len(anchors), 2)
+
+        # Trigger anchor check
+        self.rotateandgenerate(1)
+
+        # Get anchors
         anchors = self.nodes[0].spv_listanchors()
         assert_equal(len(anchors), 2)
+
         # print (anchors)
         if anchors[0]['active']:
             activeAnc = anchors[0]
@@ -95,11 +128,6 @@ class AnchorRewardsTest (DefiTestFramework):
         self.nodes[0].spv_setlastheight(5)
         self.nodes[1].spv_setlastheight(5)
         assert_equal(len(self.nodes[0].spv_listanchorrewardconfirms()), 0)
-
-        print ("Node1: Setting anchors")
-        self.nodes[1].spv_setlastheight(1)
-        self.nodes[1].spv_sendrawtx(txAnc0['txHex'])
-        self.nodes[1].spv_sendrawtx(txAnc1['txHex'])
 
         # important (!) to be synced before disconnection
         # disconnect node2 (BEFORE reward voting!) for future rollback
@@ -123,24 +151,25 @@ class AnchorRewardsTest (DefiTestFramework):
         assert_equal(len(self.nodes[0].spv_listanchorrewards()), 0)
 
         self.nodes[0].generate(1)
+
         # confirms should disappear
         wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 0, timeout=10)
 
         # check reward tx
         rew0 = self.nodes[0].spv_listanchorrewards()
-        # print ("Rewards0:", rew0)
+
         assert_equal(len(rew0), 1)
         assert_equal(rew0[0]['AnchorTxHash'], conf0[0]['btcTxHash'])
         rew0tx = self.nodes[0].decoderawtransaction(self.nodes[0].getrawtransaction(rew0[0]['RewardTxHash']))
-        # print("Reward tx:", rew0tx)
+
         assert_equal(rew0tx['vout'][1]['scriptPubKey']['addresses'][0], conf0[0]['rewardAddress'])
-        assert_equal(rew0tx['vout'][1]['value'], 0)
-        # print(self.nodes[0].getblock(self.nodes[0].getblockhash(self.nodes[0].getblockcount())))
+        assert_equal(rew0tx['vout'][1]['value'], Decimal('4.60000000')) # Height 46 * 0.1
 
         print ("Rollback!")
         self.nodes[2].generate(2)
         connect_nodes_bi(self.nodes, 1, 2)
         self.sync_all()
+
         wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 1, timeout=10) # while rollback, it should appear w/o wait
         assert_equal(len(self.nodes[0].spv_listanchorrewards()), 0)
         wait_until(lambda: len(self.nodes[2].spv_listanchorrewardconfirms()) == 1, timeout=10) # but wait here
@@ -149,15 +178,19 @@ class AnchorRewardsTest (DefiTestFramework):
         print ("Reward again")
         self.nodes[1].generate(1)
         self.sync_all()
+
         wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 0, timeout=10)
         assert_equal(len(self.nodes[0].spv_listanchorrewards()), 1)
 
-        print ("Generate more (2 unpayed rewards at once)")
-        self.nodes[0].spv_setlastheight(6)
-        self.nodes[1].spv_setlastheight(6)
-        self.nodes[0].generate(60)
+        print ("Generate more (2 unpaid rewards at once)")
+        self.setlastheight(6)
+
+        # Move forward slowly to avoid future block error
+        for i in range(8, 2, -1):
+            self.mocktime(-(i * 60 * 60))
+            self.rotateandgenerate(5)
         self.sync_all()
-        wait_until(lambda: self.authsquorum(75), timeout=10)
+        wait_until(lambda: self.authsquorum(60), timeout=10)
 
         rewardAddress2 = self.nodes[0].getnewaddress("", "legacy")
         txAnc2 = self.nodes[0].spv_createanchor([{
@@ -171,43 +204,37 @@ class AnchorRewardsTest (DefiTestFramework):
         self.nodes[0].spv_setlastheight(7)
         self.nodes[1].spv_setlastheight(7)
 
-        self.nodes[0].generate(15)
-        self.sync_all()
-        wait_until(lambda: self.authsquorum(90), timeout=10)
+        # Move forward slowly to avoid future block error
+        for i in range(2, -1, -1):
+            self.mocktime(-(i * 60 * 60))
+            self.rotateandgenerate(anchorFrequency)
 
-        rewardAddress3 = self.nodes[0].getnewaddress("", "legacy")
-        txAnc3 = self.nodes[0].spv_createanchor([{
-            'txid': "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            'vout': 3,
-            'amount': 2262303,
-            'privkey': "cStbpreCo2P4nbehPXZAAM3gXXY1sAphRfEhj7ADaLx8i2BmxvEP"}],
-            rewardAddress3)
-        self.nodes[1].spv_sendrawtx(txAnc3['txHex'])
+        self.sync_all()
+        wait_until(lambda: self.authsquorum(75), timeout=10)
 
         # for rollback. HERE, to deny cofirmations for node2
         disconnect_nodes(self.nodes[1], 2)
 
         self.nodes[0].spv_setlastheight(13)
         self.nodes[1].spv_setlastheight(13)
+
         # important to wait here!
         self.sync_blocks(self.nodes[0:2])
-        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 2 and self.nodes[0].spv_listanchorrewardconfirms()[0]['signers'] == 2 and self.nodes[0].spv_listanchorrewardconfirms()[1]['signers'] == 2, timeout=10)
+
+        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 1 and self.nodes[0].spv_listanchorrewardconfirms()[0]['signers'] == 2, timeout=10)
 
         # check confirmations (revoting) after node restart:
         self.stop_node(0)
-        self.start_node(0)
+        self.start_node(0, ['-txindex=1', '-amkheight=0', "-dakotaheight=0"])
         connect_nodes_bi(self.nodes, 0, 1)
-        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 2 and self.nodes[0].spv_listanchorrewardconfirms()[0]['signers'] == 2 and self.nodes[0].spv_listanchorrewardconfirms()[1]['signers'] == 2, timeout=10)
-
-        self.nodes[0].generate(1)
         self.sync_blocks(self.nodes[0:2])
-
-        # there is a tricky place here: the rest of confirms should be revoted, but it is very hard to check in regtest due to the same team
         wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 1 and self.nodes[0].spv_listanchorrewardconfirms()[0]['signers'] == 2, timeout=10)
-        assert_equal(len(self.nodes[0].spv_listanchorrewards()), 2)
-        self.nodes[0].generate(1)
+
+        self.nodes[1].generate(1)
+        self.sync_blocks(self.nodes[0:2])
         wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 0, timeout=10)
-        assert_equal(len(self.nodes[0].spv_listanchorrewards()), 3)
+
+        assert_equal(len(self.nodes[0].spv_listanchorrewards()), 2)
 
         # check reward of anc2 value (should be 5)
         rew = self.nodes[0].spv_listanchorrewards()
@@ -216,73 +243,14 @@ class AnchorRewardsTest (DefiTestFramework):
                 rew2Hash = i['RewardTxHash']
         rew2tx = self.nodes[0].decoderawtransaction(self.nodes[0].getrawtransaction(rew2Hash))
         assert_equal(rew2tx['vout'][1]['scriptPubKey']['addresses'][0], rewardAddress2)
-        assert_equal(rew2tx['vout'][1]['value'], 5)
+        assert_equal(rew2tx['vout'][1]['value'], Decimal('7.60000000'))
 
-        print ("Rollback two rewards at once!")
+        print ("Rollback a rewards")
         self.nodes[2].generate(3)
         connect_nodes_bi(self.nodes, 1, 2)
         self.sync_all()
-        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 2, timeout=10)
+        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 1, timeout=10)
         assert_equal(len(self.nodes[0].spv_listanchorrewards()), 1)
 
-
-        #
-        # ======================== AMK 1 : test anchor rewards after the fork ==========================
-        #
-        blocks = self.nodes[0].getblockcount()
-        self.stop_node(0)
-        self.start_node(0, [ "-dummypos=1", "-spv=1", "-fakespv=1", "-txindex=1", "-anchorquorum=2", '-amkheight='+str(blocks)]) # activate amk fork
-
-        # check for community AnchorReward balance
-        assert_equal(self.nodes[0].listcommunitybalances()['AnchorReward'], 0)
-        self.nodes[0].generate(5) # mine something
-        assert_equal(self.nodes[0].listcommunitybalances()['AnchorReward'], Decimal('0.5')) # reward for 5 blocks after the fork
-
-        connect_nodes_bi(self.nodes, 0, 1)
-        wait_until(lambda: len(self.nodes[0].spv_listanchorrewardconfirms()) == 2 and self.nodes[0].spv_listanchorrewardconfirms()[0]['signers'] == 2 and self.nodes[0].spv_listanchorrewardconfirms()[1]['signers'] == 2, timeout=10)
-        forkConfirms = self.nodes[0].spv_listanchorrewardconfirms()
-
-
-        rewListOld = self.nodes[0].spv_listanchorrewards()
-        # assume that one unpayed reward would be mined
-        self.nodes[0].generate(1)
-        # check reward tx
-        rewListNew = self.nodes[0].spv_listanchorrewards()
-        rewListDiff = [i for i in rewListNew if i not in rewListOld]
-        assert_equal(len(rewListDiff), 1) # just for sure, only one tx for block for default particular miner
-        rewFork = rewListDiff[0]
-
-        rewForkTx = self.nodes[0].decoderawtransaction(self.nodes[0].getrawtransaction(rewFork['RewardTxHash']))
-
-        # search for payed confirmation
-        for i in forkConfirms:
-            if i['btcTxHash'] == rewFork['AnchorTxHash']:
-                confirm = i
-                approved = True
-        assert(approved)
-
-        assert_equal(rewForkTx['vout'][1]['scriptPubKey']['addresses'][0], confirm['rewardAddress'])
-        assert_equal(rewForkTx['vout'][1]['value'], Decimal('0.5'))
-
-        # check that counter was dropped
-        assert_equal(self.nodes[0].listcommunitybalances()['AnchorReward'], Decimal('0.1')) # not zero, but 0.1 for the current block
-
-        # confirmations decreased
-        forkConfirms = self.nodes[0].spv_listanchorrewardconfirms()
-        assert_equal(len(forkConfirms), 1)
-
-        # latest part: mine one more block, check the last reward
-        confirm = forkConfirms[0]
-        self.nodes[0].generate(1)
-        rewListNew2 = self.nodes[0].spv_listanchorrewards()
-        rewListDiff = [i for i in rewListNew2 if i not in rewListNew]
-        assert_equal(len(rewListDiff), 1)
-        rewFork = rewListDiff[0]
-        rewForkTx = self.nodes[0].decoderawtransaction(self.nodes[0].getrawtransaction(rewFork['RewardTxHash']))
-        assert_equal(rewForkTx['vout'][1]['scriptPubKey']['addresses'][0], confirm['rewardAddress'])
-        assert_equal(rewForkTx['vout'][1]['value'], Decimal('0.1')) # only one block reward accumulated till prev reward
-
-
 if __name__ == '__main__':
-    print ("Disabled: feature_anchor_rewards test")
-    # AnchorRewardsTest ().main ()
+    AnchorRewardsTest().main()
