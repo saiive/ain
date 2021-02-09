@@ -536,7 +536,7 @@ UniValue spv_listanchors(const JSONRPCRequest& request)
             anchor.pushKV("anchorCreationHeight", static_cast<int>(anchorCreationHeight));
         }
 
-        anchor.pushKV("signatures", rec.anchor.sigs.size());
+        anchor.pushKV("signatures", static_cast<int>(rec.anchor.sigs.size()));
         bool const isActive = cur && cur->txHash == rec.txHash;
         anchor.pushKV("active", isActive);
         if (isActive) {
@@ -584,7 +584,7 @@ UniValue spv_listanchorspending(const JSONRPCRequest& request)
         anchor.pushKV("defiBlockHash", rec.anchor.blockHash.ToString());
         anchor.pushKV("rewardAddress", EncodeDestination(rewardDest));
         anchor.pushKV("confirmations", panchors->GetAnchorConfirmations(&rec));
-        anchor.pushKV("signatures", rec.anchor.sigs.size());
+        anchor.pushKV("signatures", static_cast<int>(rec.anchor.sigs.size()));
 
         // If post-fork show creation height
         uint64_t anchorCreationHeight{0};
