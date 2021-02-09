@@ -3264,10 +3264,10 @@ static void searchInWallet(CWallet const * pwallet,
 
     LOCK(pwallet->cs_wallet);
 
-    const auto& txOrdered = pwallet->wtxOrdered;
+    const auto& txOrdered = pwallet->mapWallet.get<ByOrder>();
 
     for (const auto& tx : txOrdered) {
-        auto pwtx = tx.second;
+        auto* pwtx = &tx;
 
         if (pwtx->IsCoinBase()) {
             continue;
@@ -3432,7 +3432,7 @@ UniValue listaccounthistory(const JSONRPCRequest& request) {
     }
 
     std::set<uint256> txs;
-    const bool shouldSearchInWallet = (tokenFilter.empty() || tokenFilter == "DFI");
+    const bool shouldSearchInWallet = (tokenFilter.empty() || tokenFilter == "DFI") && CustomTxType::None == txType;
 
     auto hasToken = [&tokenFilter](TAmounts const & diffs) {
         for (auto const & diff : diffs) {
@@ -3456,6 +3456,10 @@ UniValue listaccounthistory(const JSONRPCRequest& request) {
         }
 
         if (shouldSkipBlock(key.blockHeight)) {
+            return true;
+        }
+
+        if (isMine && !(IsMineCached(*pwallet, key.owner) & filter)) {
             return true;
         }
 
@@ -3524,6 +3528,10 @@ UniValue listaccounthistory(const JSONRPCRequest& request) {
                 return true;
             }
 
+            if (isMine && !(IsMineCached(*pwallet, key.owner) & filter)) {
+                return true;
+            }
+
             if(!tokenFilter.empty()) {
                 bool tokenFound = false;
                 for (auto& value : valueLazy.get()) {
@@ -3581,6 +3589,7 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
                        {
                             {"no_rewards", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED, "Filter out rewards"},
                             {"token", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Filter by token"},
+                            {"txtype", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Filter by transaction type, supported letter from 'CRTMNnpuslrUbBG'"},
                        },
                    },
                },
@@ -3607,6 +3616,7 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
 
     bool noRewards = false;
     std::string tokenFilter;
+    auto txType = CustomTxType::None;
 
     if (request.params.size() > 1) {
         UniValue optionsObj = request.params[1].get_obj();
@@ -3614,12 +3624,20 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
             {
                 {"no_rewards", UniValueType(UniValue::VBOOL)},
                 {"token", UniValueType(UniValue::VSTR)},
+                {"txtype", UniValueType(UniValue::VSTR)},
             }, true, true);
 
         noRewards = optionsObj["no_rewards"].getBool();
 
         if (!optionsObj["token"].isNull()) {
             tokenFilter = optionsObj["token"].get_str();
+        }
+
+        if (!optionsObj["txtype"].isNull()) {
+            const auto str = optionsObj["txtype"].get_str();
+            if (str.size() == 1) {
+                txType = CustomTxCodeToType(str[0]);
+            }
         }
     }
 
@@ -3639,7 +3657,7 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
     }
 
     std::set<uint256> txs;
-    const bool shouldSearchInWallet = (tokenFilter.empty() || tokenFilter == "DFI");
+    const bool shouldSearchInWallet = (tokenFilter.empty() || tokenFilter == "DFI") && CustomTxType::None == txType;
 
     auto hasToken = [&tokenFilter](TAmounts const & diffs) {
         for (auto const & diff : diffs) {
@@ -3663,7 +3681,15 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
             return false;
         }
 
+        if (isMine && !(IsMineCached(*pwallet, key.owner) & filter)) {
+            return true;
+        }
+
         const auto& value = valueLazy.get();
+
+        if (CustomTxType::None != txType && value.category != uint8_t(txType)) {
+            return true;
+        }
 
         if(!tokenFilter.empty() && !hasToken(value.diff)) {
             return true;
@@ -3713,6 +3739,10 @@ UniValue accounthistorycount(const JSONRPCRequest& request) {
     auto shouldContinueToNextReward = [&](RewardHistoryKey const & key, CLazySerialize<RewardHistoryValue> valueLazy) -> bool {
         if (!owner.empty() && owner != key.owner) {
             return false;
+        }
+
+        if (isMine && !(IsMineCached(*pwallet, key.owner) & filter)) {
+            return true;
         }
 
         if(!tokenFilter.empty()) {
@@ -4169,11 +4199,10 @@ static UniValue getcustomtx(const JSONRPCRequest& request)
     // Search wallet if available
     if (pwallet) {
         LOCK(pwallet->cs_wallet);
-        auto it = pwallet->mapWallet.find(hash);
-        if (it != pwallet->mapWallet.end())
+        if (auto wtx = pwallet->GetWalletTx(hash))
         {
-            tx = it->second.tx;
-            hashBlock = it->second.hashBlock;
+            tx = wtx->tx;
+            hashBlock = wtx->hashBlock;
         }
     }
 
