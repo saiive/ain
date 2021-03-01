@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
 #include <config/defi-config.h>
@@ -460,10 +460,8 @@ void SetupServerArgs()
     gArgs.AddArg("-txnotokens", "Flag to force old tx serialization (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-anchorquorum", "Min quorum size (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-spv", "Enable SPV to bitcoin blockchain (default: 0, unless masternode)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-fakespv", "Fake SPV for testing purposes (default: 0, regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-criminals", "punishment of criminal nodes (default: 0, regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_resync", "Flag to reset spv database and resync from zero block (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-spv_testnet", "Flag to use bitcoin testnet instead of main (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_rescan", "Block height to rescan from (default: 0 = off)", ArgsManager::ALLOW_INT, OptionsCategory::OPTIONS);
     gArgs.AddArg("-amkheight", "AMK fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-bayfrontheight", "Bayfront fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
@@ -1613,10 +1611,12 @@ bool AppInitMain(InitInterfaces& interfaces)
 
                 if (gArgs.GetBoolArg("-spv", anchorsEnabled)) {
                     spv::pspv.reset();
-                    if (gArgs.GetBoolArg("-fakespv", false) && Params().NetworkIDString() == "regtest") {
+                    if (Params().NetworkIDString() == "regtest") {
                         spv::pspv = MakeUnique<spv::CFakeSpvWrapper>();
+                    } else if (Params().NetworkIDString() == "test") {
+                        spv::pspv = MakeUnique<spv::CSpvWrapper>(false, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
                     } else {
-                        spv::pspv = MakeUnique<spv::CSpvWrapper>(!gArgs.GetBoolArg("-spv_testnet", false), nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
+                        spv::pspv = MakeUnique<spv::CSpvWrapper>(true, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
                     }
                 }
                 panchors->Load();
@@ -1935,7 +1935,6 @@ bool AppInitMain(InitInterfaces& interfaces)
             operatorsSet.insert(op);
 
             pos::ThreadStaker::Args stakerParams;
-            auto& minterKey = stakerParams.minterKey;
             auto& operatorId = stakerParams.operatorID;
             auto& coinbaseScript = stakerParams.coinbaseScript;
 
@@ -1950,14 +1949,14 @@ bool AppInitMain(InitInterfaces& interfaces)
 
             bool found = false;
             for (auto wallet : wallets) {
-                if (wallet->GetKey(operatorId, minterKey)) {
+                if (::IsMine(*wallet, destination)) {
                     found = true;
                     break;
                 }
             }
 
             if (!found) {
-                LogPrintf("Error: masternode operator (%s) private key not found\n", op);
+                LogPrintf("Error: masternode operator (%s) private key is not owned by the wallet\n", op);
                 continue;
             }
 

@@ -1,6 +1,6 @@
-// Copyright (c) 2019 DeFi Blockchain Developers
+// Copyright (c) DeFi Blockchain Developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <spv/spv_wrapper.h>
 
@@ -368,22 +368,9 @@ void CSpvWrapper::OnTxAdded(BRTransaction * tx)
         LogPrint(BCLog::SPV, "IsAnchorTx(): %s\n", txHash.ToString());
 
         LOCK(cs_main);
-
-        bool pending{false};
-        if (ValidateAnchor(anchor, pending)) {
-            LogPrint(BCLog::SPV, "valid anchor tx: %s\n", txHash.ToString());
-
-            if (panchors->AddAnchor(anchor, txHash, tx->blockHeight, false)) {
-                LogPrint(BCLog::SPV, "adding anchor %s\n", txHash.ToString());
-            }
-        } else if (pending) {
-            if (panchors->AddToAnchorPending(anchor, txHash, tx->blockHeight)) {
-                LogPrint(BCLog::SPV, "adding anchor to pending %s\n", txHash.ToString());
-            }
+        if (ValidateAnchor(anchor) && panchors->AddToAnchorPending(anchor, txHash, tx->blockHeight)) {
+            LogPrint(BCLog::SPV, "adding anchor to pending %s\n", txHash.ToString());
         }
-    }
-    else {
-        LogPrint(BCLog::SPV, "not an anchor tx %s\n", txHash.ToString());
     }
 }
 

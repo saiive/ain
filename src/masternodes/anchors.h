@@ -1,6 +1,6 @@
 // Copyright (c) 2020 The DeFi Blockchain Developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DEFI_MASTERNODES_ANCHORS_H
 #define DEFI_MASTERNODES_ANCHORS_H
@@ -493,7 +493,7 @@ CAmount GetAnchorSubsidy(int anchorHeight, int prevAnchorHeight, const Consensus
 
 // thowing exceptions (not a bool due to more verbose rpc errors. may be 'status' or smth? )
 /// Validates all except tx confirmations
-bool ValidateAnchor(CAnchor const & anchor, bool& pending);
+bool ValidateAnchor(CAnchor const & anchor);
 
 // Validate anchor in the context of the active chain. This is used for anchor auths and anchors read from Bitcoin.
 bool ContextualValidateAnchor(const CAnchorData& anchor, CBlockIndex &anchorBlock, uint64_t &anchorCreationHeight);

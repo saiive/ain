@@ -2,7 +2,7 @@
 # Copyright (c) 2014-2019 The Bitcoin Core developers
 # Copyright (c) DeFi Blockchain Developers
 # Distributed under the MIT software license, see the accompanying
-# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+# file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Test the masternodes RPC.
 
 - verify anchors rewards
@@ -20,9 +20,9 @@ class AnchorRewardsTest (DefiTestFramework):
     def set_test_params(self):
         self.num_nodes = 3
         self.extra_args = [
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
-            [ "-dummypos=1", "-spv=1", "-fakespv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
+            [ "-dummypos=1", "-spv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
+            [ "-dummypos=1", "-spv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
+            [ "-dummypos=1", "-spv=1", '-amkheight=0', "-anchorquorum=2", "-dakotaheight=1"],
         ]
         self.setup_clean_chain = True
 

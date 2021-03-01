@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <miner.h>
 
@@ -787,6 +787,29 @@ int32_t ThreadStaker::operator()(ThreadStaker::Args args, CChainParams chainpara
     };
 
     const auto operatorName = args.operatorID.GetHex();
+
+    auto wallets = GetWallets();
+
+    while (true) {
+        boost::this_thread::interruption_point();
+
+        bool found = false;
+        for (auto wallet : wallets) {
+            if (wallet->GetKey(args.operatorID, args.minterKey)) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            break;
+        }
+        static uint64_t time = 0;
+        if (GetSystemTimeInSeconds() - time > 120) {
+            LogPrintf("ThreadStaker (%s): unlock wallet to start minting...\n", operatorName);
+            time = GetSystemTimeInSeconds();
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
 
     LogPrintf("ThreadStaker (%s): started.\n", operatorName);
 
