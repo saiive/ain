@@ -1,7 +1,7 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
 
@@ -119,12 +119,16 @@ public:
         consensus.BayfrontMarinaHeight = 465150;
         consensus.BayfrontGardensHeight = 488300;
         consensus.ClarkeQuayHeight = 595738;
+        consensus.DakotaHeight = 678000; // 1st March 2021
+        consensus.DakotaCrescentHeight = 733000; // 25th March 2021
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 //        consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
 //        consensus.pos.nTargetSpacing = 10 * 60; // 10 minutes
         consensus.pos.nTargetTimespan = 5 * 60; // 5 min == 10 blocks
         consensus.pos.nTargetSpacing = 30; // seconds
+        consensus.pos.nStakeMinAge = 0;
+        consensus.pos.nStakeMaxAge = 14 * 24 * 60 * 60; // Two weeks
         consensus.pos.fAllowMinDifficultyBlocks = false; // only for regtest
         consensus.pos.fNoRetargeting = false; // only for regtest
 
@@ -151,10 +155,13 @@ public:
         consensus.mn.resignDelay = 60;
         consensus.mn.creationFee = 10 * COIN;
         consensus.mn.collateralAmount = 1000000 * COIN;
+        consensus.mn.collateralAmountDakota = 20000 * COIN;
         consensus.mn.historyFrame = 300;
         consensus.mn.anchoringTeamSize = 5;
         consensus.mn.anchoringFrequency = 15;
-        consensus.mn.anchoringLag = 15;
+
+        consensus.mn.anchoringTimeDepth = 3 * 60 * 60; // 3 hours
+        consensus.mn.anchoringTeamChange = 120; // Number of blocks
 
         consensus.token.creationFee = 100 * COIN;
         consensus.token.collateralAmount = 1 * COIN;
@@ -174,10 +181,10 @@ public:
          * The message start string is designed to be unlikely to occur in normal data.
          * The characters are rarely used upper ASCII, not valid as UTF-8, and produce
          * a large 32-bit integer with any alignment.
-         */        
+         */
         pchMessageStart[0] = 0xf9;
-        pchMessageStart[1] = 0xbe;	        
-        pchMessageStart[2] = 0xb4;	        
+        pchMessageStart[1] = 0xbe;
+        pchMessageStart[2] = 0xb4;
         pchMessageStart[3] = 0xd9;
         pchMessageStartPostAMK[0] = 0xe2;
         pchMessageStartPostAMK[1] = 0xaa;
@@ -262,6 +269,8 @@ public:
                 {500000, uint256S("6a5b285bc68362deb66148069f55f82c02974056e73f5cc96971f7661ecd5880")},
                 {550000, uint256S("3f9aab70727d3cc76a3d406f520a71ccc6095aeea2d185e489f563320d429d5b")},
                 {597925, uint256S("0ff2aa3749300e3d0b5bc8d48f9d699bc42e222fe718dc011b33913127087c6d")},
+                {600000, uint256S("79ddf4537e40cb59335a0551e5edc7bd396e6949aa2864c3200ca66f9c455405")},
+                {650000, uint256S("f18d64dd75c53590e833d3068132a65644963d5c5aebb4c73d42cbde8dc28d68")},
             }
         };
 
@@ -293,12 +302,16 @@ public:
         consensus.BayfrontMarinaHeight = 90470;
         consensus.BayfrontGardensHeight = 101342;
         consensus.ClarkeQuayHeight = 155000;
+        consensus.DakotaHeight = 220680;
+        consensus.DakotaCrescentHeight = 287700;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 //        consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
 //        consensus.pos.nTargetSpacing = 10 * 60; // 10 minutes
         consensus.pos.nTargetTimespan = 5 * 60; // 5 min == 10 blocks
         consensus.pos.nTargetSpacing = 30;
+        consensus.pos.nStakeMinAge = 0;
+        consensus.pos.nStakeMaxAge = 14 * 24 * 60 * 60; // Two weeks
         consensus.pos.fAllowMinDifficultyBlocks = false;
         consensus.pos.fNoRetargeting = false; // only for regtest
 
@@ -325,10 +338,13 @@ public:
         consensus.mn.resignDelay = 60;
         consensus.mn.creationFee = 10 * COIN;
         consensus.mn.collateralAmount = 1000000 * COIN;
+        consensus.mn.collateralAmountDakota = 20000 * COIN;
         consensus.mn.historyFrame = 300;
         consensus.mn.anchoringTeamSize = 5;
         consensus.mn.anchoringFrequency = 15;
-        consensus.mn.anchoringLag = 15;
+
+        consensus.mn.anchoringTimeDepth = 3 * 60 * 60; // 3 hours
+        consensus.mn.anchoringTeamChange = 120; // Number of blocks
 
         consensus.token.creationFee = 100 * COIN;
         consensus.token.collateralAmount = 1 * COIN;
@@ -348,7 +364,7 @@ public:
         pchMessageStartPostAMK[1] = pchMessageStart[1] = 0x11;
         pchMessageStartPostAMK[2] = pchMessageStart[2] = 0x09;
         pchMessageStartPostAMK[3] = pchMessageStart[3] = 0x07;
-        
+
         nDefaultPort = 18555;
         nPruneAfterHeight = 1000;
         m_assumed_blockchain_size = 30;
@@ -430,15 +446,19 @@ public:
         consensus.BIP34Hash = uint256();
         consensus.BIP65Height = 0;
         consensus.BIP66Height = 0;
-        consensus.AMKHeight = 150;
-        consensus.BayfrontHeight = 250;
-        consensus.BayfrontMarinaHeight = 300;
-        consensus.BayfrontGardensHeight = 300;
-        consensus.ClarkeQuayHeight = 500;
+        consensus.AMKHeight = 0;
+        consensus.BayfrontHeight = 0;
+        consensus.BayfrontMarinaHeight = 0;
+        consensus.BayfrontGardensHeight = 0;
+        consensus.ClarkeQuayHeight = 0;
+        consensus.DakotaHeight = 0;
+        consensus.DakotaCrescentHeight = 0;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.pos.nTargetTimespan = 5 * 60; // 5 min == 10 blocks
         consensus.pos.nTargetSpacing = 30;
+        consensus.pos.nStakeMinAge = 0;
+        consensus.pos.nStakeMaxAge = 14 * 24 * 60 * 60; // Two weeks
         consensus.pos.fAllowMinDifficultyBlocks = false;
         consensus.pos.fNoRetargeting = false; // only for regtest
 
@@ -465,10 +485,13 @@ public:
         consensus.mn.resignDelay = 60;
         consensus.mn.creationFee = 10 * COIN;
         consensus.mn.collateralAmount = 1000000 * COIN;
+        consensus.mn.collateralAmountDakota = 20000 * COIN;
         consensus.mn.historyFrame = 300;
         consensus.mn.anchoringTeamSize = 5;
         consensus.mn.anchoringFrequency = 15;
-        consensus.mn.anchoringLag = 15;
+
+        consensus.mn.anchoringTimeDepth = 3 * 60 * 60; // 3 hours
+        consensus.mn.anchoringTeamChange = 120; // Number of blocks
 
         consensus.spv.creationFee = 100000; // should be > bitcoin's dust
         consensus.spv.wallet_xpub = "tpubD9RkyYW1ixvD9vXVpYB1ka8rPZJaEQoKraYN7YnxbBxxsRYEMZgRTDRGEo1MzQd7r5KWxH8eRaQDVDaDuT4GnWgGd17xbk6An6JMdN4dwsY"; /// @note devnet matter
@@ -569,10 +592,14 @@ public:
         consensus.BayfrontMarinaHeight = 10000000;
         consensus.BayfrontGardensHeight = 10000000;
         consensus.ClarkeQuayHeight = 10000000;
+        consensus.DakotaHeight = 10000000;
+        consensus.DakotaCrescentHeight = 10000000;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
         consensus.pos.nTargetSpacing = 10 * 60; // 10 minutes
+        consensus.pos.nStakeMinAge = 0;
+        consensus.pos.nStakeMaxAge = 14 * 24 * 60 * 60; // Two weeks
         consensus.pos.fAllowMinDifficultyBlocks = true; // only for regtest
         consensus.pos.fNoRetargeting = true; // only for regtest
 
@@ -599,10 +626,13 @@ public:
         consensus.mn.resignDelay = 10;
         consensus.mn.creationFee = 1 * COIN;
         consensus.mn.collateralAmount = 10 * COIN;
+        consensus.mn.collateralAmountDakota = 2 * COIN;
         consensus.mn.historyFrame = 300;
-        consensus.mn.anchoringTeamSize = 8;
+        consensus.mn.anchoringTeamSize = 3;
         consensus.mn.anchoringFrequency = 15;
-        consensus.mn.anchoringLag = 15;
+
+        consensus.mn.anchoringTimeDepth = 3 * 60 * 60;
+        consensus.mn.anchoringTeamChange = 15; // Number of blocks
 
         consensus.token.creationFee = 1 * COIN;
         consensus.token.collateralAmount = 10 * COIN;
@@ -613,7 +643,7 @@ public:
         consensus.spv.anchorSubsidy = 0 * COIN;
         consensus.spv.subsidyIncreasePeriod = 60;
         consensus.spv.subsidyIncreaseValue = 5 * COIN;
-        consensus.spv.minConfirmations = 1;
+        consensus.spv.minConfirmations = 6;
 
         consensus.nonUtxoBlockSubsidies.emplace(CommunityAccountType::IncentiveFunding, 10 * COIN / 50); // normalized to (COIN == 100%) // 10 per block
         consensus.nonUtxoBlockSubsidies.emplace(CommunityAccountType::AnchorReward, COIN/10 / 50);       // 0.1 per block
@@ -754,6 +784,28 @@ void CRegTestParams::UpdateActivationParametersFromArgs(const ArgsManager& args)
             height = std::numeric_limits<int>::max();
         }
         consensus.ClarkeQuayHeight = static_cast<int>(height);
+    }
+
+    if (gArgs.IsArgSet("-dakotaheight")) {
+        int64_t height = gArgs.GetArg("-dakotaheight", consensus.DakotaHeight);
+        if (height < -1 || height >= std::numeric_limits<int>::max()) {
+            throw std::runtime_error(strprintf("Activation height %ld for Dakota is out of valid range. Use -1 to disable dakota features.", height));
+        } else if (height == -1) {
+            LogPrintf("Dakota disabled for testing\n");
+            height = std::numeric_limits<int>::max();
+        }
+        consensus.DakotaHeight = static_cast<int>(height);
+    }
+
+    if (gArgs.IsArgSet("-dakotacrescentheight")) {
+        int64_t height = gArgs.GetArg("-dakotacrescentheight", consensus.DakotaCrescentHeight);
+        if (height < -1 || height >= std::numeric_limits<int>::max()) {
+            throw std::runtime_error(strprintf("Activation height %ld for DakotaCrescent is out of valid range. Use -1 to disable dakota features.", height));
+        } else if (height == -1) {
+            LogPrintf("DakotaCrescent disabled for testing\n");
+            height = std::numeric_limits<int>::max();
+        }
+        consensus.DakotaCrescentHeight = static_cast<int>(height);
     }
 
     if (!args.IsArgSet("-vbparams")) return;

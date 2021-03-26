@@ -45,7 +45,7 @@ std::shared_ptr<CBlock> FinalizeBlock(std::shared_ptr<CBlock> pblock, const uint
     do {
         time++;
         pblock->nTime = time;
-    } while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits,  (int64_t) pblock->nTime, Params().GetConsensus(), masternodeID).hashOk);
+    } while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits, 1, (int64_t) pblock->nTime, pblock->height, masternodeID, Params().GetConsensus()));
 
     BOOST_CHECK(!pos::SignPosBlock(pblock, minterKey));
 
@@ -53,7 +53,6 @@ std::shared_ptr<CBlock> FinalizeBlock(std::shared_ptr<CBlock> pblock, const uint
 }
 
 std::vector<CBlockHeader> GenerateTwoCriminalsHeaders(CKey const &minterKey, uint64_t const &mintedBlocks, uint256 const &masternodeID) {
-    uint64_t time = Params().GenesisBlock().nTime;
     uint64_t height = 1;
     uint256 prevStakeModifier = Params().GenesisBlock().stakeModifier;
 

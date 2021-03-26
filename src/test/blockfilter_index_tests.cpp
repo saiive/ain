@@ -1,6 +1,6 @@
 // Copyright (c) 2017-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <blockfilter.h>
 #include <chainparams.h>
@@ -19,6 +19,7 @@
 
 BOOST_AUTO_TEST_SUITE(blockfilter_index_tests)
 
+/*
 static bool ComputeFilter(BlockFilterType filter_type, const CBlockIndex* block_index,
                           BlockFilter& filter)
 {
@@ -82,6 +83,7 @@ static CBlock CreateBlock(const CBlockIndex* prev,
 
     uint256 masternodeID = testMasternodeKeys.begin()->first;
     uint32_t mintedBlocks(0);
+    int64_t creationHeight;
     CKey minterKey;
     std::map<uint256, TestMasternodeKeys>::const_iterator pos = testMasternodeKeys.find(masternodeID);
     if (pos == testMasternodeKeys.end())
@@ -96,6 +98,7 @@ static CBlock CreateBlock(const CBlockIndex* prev,
             return {};
 
         mintedBlocks = nodePtr->mintedBlocks;
+        creationHeight = int64_t(nodePtr->creationHeight);
     }
 
     block.height = prev->nHeight + 1;
@@ -111,7 +114,7 @@ static CBlock CreateBlock(const CBlockIndex* prev,
     unsigned int extraNonce = 0;
     IncrementExtraNonce(&block, prev, extraNonce);
 
-    while (!pos::CheckKernelHash(block.stakeModifier, block.nBits,  (int64_t) block.nTime, Params().GetConsensus(), masternodeID).hashOk) block.nTime++;
+    while (!pos::CheckKernelHash(block.stakeModifier, block.nBits, creationHeight, (int64_t) block.nTime, masternodeID, Params().GetConsensus())) block.nTime++;
   //  while (!CheckProofOfWork(block.GetHash(), block.nBits, chainparams.GetConsensus())) ++block.nNonce;
     std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>(std::move(block));
     auto err = pos::SignPosBlock(pblock, minterKey);
@@ -138,7 +141,7 @@ static bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script
 
     return true;
 }
-
+*/
 BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, TestChain100Setup)
 {
 //    BlockFilterIndex filter_index(BlockFilterType::BASIC, 1 << 20, true); // TODO: (temp) !!!

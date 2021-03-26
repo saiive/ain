@@ -24,6 +24,39 @@ struct SpvTestingSetup : public TestingSetup {
 
 BOOST_FIXTURE_TEST_SUITE(anchor_tests, SpvTestingSetup)
 
+BOOST_AUTO_TEST_CASE(anchor_order_logic)
+{
+    CAnchorIndex::AnchorRec anchorOne;
+    CAnchorIndex::AnchorRec anchorTwo;
+
+    anchorOne.btcHeight = 100;
+    anchorTwo.btcHeight = 200;
+
+    // Lowest Bitcoin height wins
+    BOOST_CHECK(OrderPendingAnchors(anchorOne, anchorTwo) == true);
+    BOOST_CHECK(OrderPendingAnchors(anchorTwo, anchorOne) == false);
+
+    anchorOne.btcHeight = anchorTwo.btcHeight;
+    anchorOne.anchor.height = 100;
+    anchorTwo.anchor.height = 200;
+
+    // Heighest DeFi height wins
+    BOOST_CHECK(OrderPendingAnchors(anchorOne, anchorTwo) == false);
+    BOOST_CHECK(OrderPendingAnchors(anchorTwo, anchorOne) == true);
+    BOOST_CHECK(BestOfTwo(&anchorOne, &anchorTwo)->anchor.height == 200);
+    BOOST_CHECK(BestOfTwo(&anchorTwo, &anchorOne)->anchor.height == 200);
+
+    anchorOne.anchor.height = anchorTwo.anchor.height;
+    anchorOne.txHash = uint256S("12ca5ac2b666478bbbdfc0e0b328552a8cd83aa1b3fbb822560ab8cbf72be893");
+    anchorTwo.txHash = uint256S("852bb89808af5a5487d4afed23b4ec3c4186ec8101ff9e7c73a038c9a2c436d9");
+
+    // Lowest hash wins
+    BOOST_CHECK(OrderPendingAnchors(anchorOne, anchorTwo) == true);
+    BOOST_CHECK(OrderPendingAnchors(anchorTwo, anchorOne) == false);
+    BOOST_CHECK(BestOfTwo(&anchorOne, &anchorTwo)->txHash == uint256S("12ca5ac2b666478bbbdfc0e0b328552a8cd83aa1b3fbb822560ab8cbf72be893"));
+    BOOST_CHECK(BestOfTwo(&anchorTwo, &anchorOne)->txHash == uint256S("12ca5ac2b666478bbbdfc0e0b328552a8cd83aa1b3fbb822560ab8cbf72be893"));
+}
+
 BOOST_AUTO_TEST_CASE(best_anchor_activation_logic)
 {
     spv::CFakeSpvWrapper * fspv = static_cast<spv::CFakeSpvWrapper *>(spv::pspv.get());
@@ -49,7 +82,7 @@ BOOST_AUTO_TEST_CASE(best_anchor_activation_logic)
     BOOST_CHECK(panchors->ActivateBestAnchor(true) == false);
     BOOST_CHECK(panchors->GetActiveAnchor() == nullptr);
 
-    fspv->lastBlockHeight = 1; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
+    fspv->lastBlockHeight = 6; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
 
     // confirmed, active
     BOOST_CHECK(panchors->ActivateBestAnchor(true) == true);
@@ -106,7 +139,7 @@ BOOST_AUTO_TEST_CASE(best_anchor_activation_logic)
     BOOST_REQUIRE(top == nullptr);
 
     // revert to prev state, activate again
-    fspv->lastBlockHeight = 1; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
+    fspv->lastBlockHeight = 6; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
     BOOST_CHECK(panchors->ActivateBestAnchor(true) == true);
     top = panchors->GetActiveAnchor();
     BOOST_REQUIRE(top != nullptr);
@@ -115,7 +148,7 @@ BOOST_AUTO_TEST_CASE(best_anchor_activation_logic)
 
     // Stage 2. Next btc height (btc height = 2)
     // creating anc with old (wrong, empty) prev
-    fspv->lastBlockHeight = 2; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
+    fspv->lastBlockHeight = 12; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
     {
         CAnchorAuthMessage auth({uint256(), 45, uint256S("def45a"), team0});
         CAnchor anc = CAnchor::Create({ auth }, CTxDestination(PKHash()));
@@ -141,14 +174,14 @@ BOOST_AUTO_TEST_CASE(best_anchor_activation_logic)
     BOOST_CHECK(top->anchor.previousAnchor == uint256S("bb1"));
 
     // decrease btc height, fall to prev state (we already did that, but with empty top)
-    fspv->lastBlockHeight = 1; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
+    fspv->lastBlockHeight = 6; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
     BOOST_CHECK(panchors->ActivateBestAnchor(true) == true);
     top = panchors->GetActiveAnchor();
     BOOST_REQUIRE(top != nullptr);
     BOOST_CHECK(top->txHash == uint256S("bb1"));
 
     // advance to btc height = 2 again
-    fspv->lastBlockHeight = 2; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
+    fspv->lastBlockHeight = 12; panchors->UpdateLastHeight(fspv->GetLastBlockHeight());
     BOOST_CHECK(panchors->ActivateBestAnchor(true) == true);
     top = panchors->GetActiveAnchor();
     BOOST_REQUIRE(top != nullptr);

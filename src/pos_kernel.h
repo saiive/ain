@@ -8,37 +8,27 @@
 #include <amount.h>
 
 class CWallet;
-
 class COutPoint;
-
 class CBlock;
-
 class CTransaction;
-
 class CCoinsViewCache;
-
 class CKeyID;
-
 class CCustomCSView;
+class CMasternode;
 
 namespace pos {
 
-    struct CheckKernelHashRes {
-        bool hashOk;
-        arith_uint256 hashProofOfStake;
-    };
-
 /// Calculate PoS kernel hash
-    uint256
-    CalcKernelHash(uint256 stakeModifier, int64_t coinstakeTime, uint256 masternodeID, const Consensus::Params& params);
+    uint256 CalcKernelHash(const uint256& stakeModifier, int64_t height, int64_t coinstakeTime, const uint256& masternodeID, const Consensus::Params& params);
+
+    // Calculate target multiplier
+    arith_uint256 CalcCoinDayWeight(const Consensus::Params& params, const CMasternode& node, const int64_t coinstakeTime, const int64_t stakersBlockTime = 0);
 
 /// Check whether stake kernel meets hash target
-/// Sets hashProofOfStake, hashOk is true of the kernel meets hash target
-    CheckKernelHashRes
-    CheckKernelHash(uint256 stakeModifier, uint32_t nBits, int64_t coinstakeTime, const Consensus::Params& params, uint256 masternodeID);
+    bool CheckKernelHash(const uint256& stakeModifier, uint32_t nBits, int64_t height, int64_t coinstakeTime, uint64_t blockHeight, const uint256& masternodeID, const Consensus::Params& params, const int64_t stakersBlockTime = 0);
 
 /// Stake Modifier (hash modifier of proof-of-stake)
-    uint256 ComputeStakeModifier(uint256 prevStakeModifier, const CKeyID& key);
+    uint256 ComputeStakeModifier(const uint256& prevStakeModifier, const CKeyID& key);
 }
 
 #endif // DEFI_POS_KERNEL_H

@@ -1,6 +1,6 @@
 // Copyright (c) 2011-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <chainparams.h>
 #include <coins.h>
@@ -28,6 +28,7 @@
 BOOST_FIXTURE_TEST_SUITE(miner_tests, TestingSetup)
 
 // BOOST_CHECK_EXCEPTION predicates to check the specific validation error
+/*
 class HasReason {
 public:
     explicit HasReason(const std::string& reason) : m_reason(reason) {}
@@ -201,7 +202,7 @@ static void TestPackageSelection(const CChainParams& chainparams, const CScript&
     pblocktemplate = AssemblerForTest(chainparams).CreateNewBlock(scriptPubKey);
     BOOST_CHECK(pblocktemplate->block.vtx[8]->GetHash() == hashLowFeeTx2);
 }
-
+*/
 // NOTE: These tests rely on CreateNewBlock doing its own self-validation!
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 {
@@ -236,6 +237,7 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 //
 //            uint256 masternodeID = testMasternodeKeys.begin()->first;
 //            uint32_t mintedBlocks(0);
+//            int64_t creationHeight;
 //            CKey minterKey;
 //            std::map<uint256, TestMasternodeKeys>::const_iterator pos = testMasternodeKeys.find(masternodeID);
 //            BOOST_CHECK(pos != testMasternodeKeys.end());
@@ -250,13 +252,14 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 //                BOOST_CHECK(nodePtr && nodePtr->IsActive(tip->height));
 //
 //                mintedBlocks = nodePtr->mintedBlocks;
+//                creationHeight = int64_t(nodePtr->creationHeight);
 //            }
 //
 //            pblock->height = tip->nHeight + 1;
 //            pblock->mintedBlocks = mintedBlocks + 1;
 //            pblock->stakeModifier = pos::ComputeStakeModifier(tip->stakeModifier, minterKey.GetPubKey().GetID());
 //
-//            while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits,  (int64_t) pblock->nTime, chainparams.GetConsensus(), masternodeID).hashOk) pblock->nTime++;
+//            while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits, creationHeight, (int64_t) pblock->nTime, masternodeID, chainparams.GetConsensus(),)) pblock->nTime++;
 //            BOOST_CHECK(!pos::SignPosBlock(std::make_shared<CBlock>(*pblock), minterKey));
 //
 //            CMutableTransaction txCoinbase(*pblock->vtx[0]);

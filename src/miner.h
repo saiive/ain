@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DEFI_MINER_H
 #define DEFI_MINER_H
@@ -89,7 +89,7 @@ struct CompareTxIterByAncestorCount {
     {
         if (a->GetCountWithAncestors() != b->GetCountWithAncestors())
             return a->GetCountWithAncestors() < b->GetCountWithAncestors();
-        return CTxMemPool::CompareIteratorByHash()(a, b);
+        return CompareTxMemPoolEntryByEntryTime()(*a, *b);
     }
 };
 
@@ -229,9 +229,6 @@ namespace pos {
 
     class Staker {
     private:
-        std::chrono::system_clock::time_point nLastSystemTime;
-        std::chrono::steady_clock::time_point nLastSteadyTime;
-
         int64_t nLastCoinStakeSearchTime = GetAdjustedTime() - 60;
 
     public:

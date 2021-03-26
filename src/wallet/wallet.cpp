@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2019 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <wallet/wallet.h>
 
@@ -1099,8 +1099,6 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn, bool fFlushOnClose)
     LOCK(cs_wallet);
 
     WalletBatch batch(*database, "r+", fFlushOnClose);
-
-    const uint256& hash = wtxIn.GetHash();
 
     if (IsWalletFlagSet(WALLET_FLAG_AVOID_REUSE)) {
         // Mark used destinations
@@ -5085,7 +5083,7 @@ CKey GetWalletsKey(const CKeyID & keyid)
 {
     std::vector<std::shared_ptr<CWallet>> wallets = GetWallets();
     CKey key{};
-    for (auto const wallet : wallets) {
+    for (auto wallet : wallets) {
         if (wallet->GetKey(keyid, key)) {
             break;
         }

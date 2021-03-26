@@ -1,6 +1,6 @@
-// Copyright (c) 2019 DeFi Blockchain Developers
+// Copyright (c) DeFi Blockchain Developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <masternodes/anchors.h>
 #include <masternodes/balances.h>
@@ -16,7 +16,9 @@
 #include <primitives/transaction.h>
 #include <txmempool.h>
 #include <streams.h>
-#include <univalue/include/univalue.h>
+#include <validation.h>
+
+#include <univalue.h>
 
 #include <algorithm>
 #include <sstream>
@@ -115,7 +117,7 @@ bool HasFoundationAuth(CTransaction const & tx, CCoinsViewCache const & coins, C
     return false;
 }
 
-Res ApplyCustomTx(CCustomCSView & base_mnview, CCoinsViewCache const & coins, CTransaction const & tx, Consensus::Params const & consensusParams, uint32_t height, uint32_t txn, bool isCheck, bool skipAuth)
+Res ApplyCustomTx(CCustomCSView & base_mnview, CCoinsViewCache const & coins, CTransaction const & tx, Consensus::Params const & consensusParams, uint32_t height, const uint64_t &time, uint32_t txn, bool isCheck, bool skipAuth)
 {
     Res res = Res::Ok();
 
@@ -140,7 +142,7 @@ Res ApplyCustomTx(CCustomCSView & base_mnview, CCoinsViewCache const & coins, CT
         switch (guess)
         {
             case CustomTxType::CreateMasternode:
-                res = ApplyCreateMasternodeTx(mnview, tx, height, metadata);
+                res = ApplyCreateMasternodeTx(mnview, tx, height, time, metadata);
                 break;
             case CustomTxType::ResignMasternode:
                 res = ApplyResignMasternodeTx(mnview, coins, tx, height, metadata, skipAuth);
@@ -190,8 +192,9 @@ Res ApplyCustomTx(CCustomCSView & base_mnview, CCoinsViewCache const & coins, CT
             default:
                 return Res::Ok(); // not "custom" tx
         }
-        // list of transactions which aren't allowed to fail:
-        if (!res.ok && NotAllowedToFail(guess)) {
+        // list of transactions which aren't allowed to fail,
+        // post Dakota height all failed txs are marked as fatal
+        if (!res.ok && (NotAllowedToFail(guess, height) || height >= consensusParams.DakotaHeight)) {
             res.code |= CustomTxErrCodes::Fatal;
         }
     } catch (std::exception& e) {
@@ -221,12 +224,12 @@ Res ApplyCustomTx(CCustomCSView & base_mnview, CCoinsViewCache const & coins, CT
  * Checks if given tx is 'txCreateMasternode'. Creates new MN if all checks are passed
  * Issued by: any
  */
-Res ApplyCreateMasternodeTx(CCustomCSView & mnview, CTransaction const & tx, uint32_t height, std::vector<unsigned char> const & metadata, UniValue *rpcInfo)
+Res ApplyCreateMasternodeTx(CCustomCSView & mnview, CTransaction const & tx, uint32_t height, const uint64_t &time, std::vector<unsigned char> const & metadata, UniValue *rpcInfo)
 {
     // Check quick conditions first
     if (tx.vout.size() < 2 ||
         tx.vout[0].nValue < GetMnCreationFee(height) || tx.vout[0].nTokenId != DCT_ID{0} ||
-        tx.vout[1].nValue != GetMnCollateralAmount() || tx.vout[1].nTokenId != DCT_ID{0}
+        tx.vout[1].nValue != GetMnCollateralAmount(height) || tx.vout[1].nTokenId != DCT_ID{0}
         ) {
         return Res::Err("%s: %s", __func__, "malformed tx vouts (wrong creation fee or collateral amount)");
     }
@@ -254,6 +257,7 @@ Res ApplyCreateMasternodeTx(CCustomCSView & mnview, CTransaction const & tx, uin
 
     // Return here to avoid addresses exit error
     if (rpcInfo) {
+        rpcInfo->pushKV("collateralamount", ValueFromAmount(GetMnCollateralAmount(height)));
         rpcInfo->pushKV("masternodeoperator", EncodeDestination(node.operatorType == 1 ? CTxDestination(PKHash(node.operatorAuthAddress)) :
                                                 CTxDestination(WitnessV0KeyHash(node.operatorAuthAddress))));
         return Res::Ok();
@@ -262,6 +266,12 @@ Res ApplyCreateMasternodeTx(CCustomCSView & mnview, CTransaction const & tx, uin
     auto res = mnview.CreateMasternode(tx.GetHash(), node);
     if (!res.ok) {
         return Res::Err("%s: %s", __func__, res.msg);
+    }
+
+    // Build coinage from the point of masternode creation
+    if (height >= static_cast<uint32_t>(Params().GetConsensus().DakotaCrescentHeight))
+    {
+        mnview.SetMasternodeLastBlockTime(node.operatorAuthAddress, static_cast<uint32_t>(height), time);
     }
 
     return Res::Ok();
@@ -1291,7 +1301,7 @@ Res ApplyPoolSwapTx(CCustomCSView &mnview, const CCoinsViewCache &coins, const C
         }
 
         return Res::Ok();
-    }, static_cast<int>(height) >= consensusParams.BayfrontGardensHeight);
+    }, static_cast<int>(height));
 
     if (!res.ok) {
         return Res::Err("%s: %s", __func__, res.msg);
@@ -1354,6 +1364,10 @@ Res ApplySetGovernanceTx(CCustomCSView &mnview, const CCoinsViewCache &coins, co
 
 ResVal<uint256> ApplyAnchorRewardTx(CCustomCSView & mnview, CTransaction const & tx, int height, uint256 const & prevStakeModifier, std::vector<unsigned char> const & metadata, Consensus::Params const & consensusParams)
 {
+    if (height >= consensusParams.DakotaHeight) {
+        return Res::Err("Old anchor TX type after Dakota fork. Height %d", height);
+    }
+
     CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
     CAnchorFinalizationMessage finMsg;
     ss >> finMsg;
@@ -1412,7 +1426,75 @@ ResVal<uint256> ApplyAnchorRewardTx(CCustomCSView & mnview, CTransaction const &
     else {
         mnview.SetFoundationsDebt(mnview.GetFoundationsDebt() + tx.GetValueOut());
     }
+
+    return { finMsg.btcTxHash, Res::Ok() };
+}
+
+
+ResVal<uint256> ApplyAnchorRewardTxPlus(CCustomCSView & mnview, CTransaction const & tx, int height, std::vector<unsigned char> const & metadata, Consensus::Params const & consensusParams)
+{
+    if (height < consensusParams.DakotaHeight) {
+        return Res::Err("New anchor TX type before Dakota fork. Height %d", height);
+    }
+
+    CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
+    CAnchorFinalizationMessagePlus finMsg;
+    ss >> finMsg;
+
+    auto rewardTx = mnview.GetRewardForAnchor(finMsg.btcTxHash);
+    if (rewardTx) {
+        return Res::ErrDbg("bad-ar-exists", "reward for anchor %s already exists (tx: %s)",
+                           finMsg.btcTxHash.ToString(), (*rewardTx).ToString());
+    }
+
+    // Miner used confirm team at chain height when creating this TX, this is height - 1.
+    if (!finMsg.CheckConfirmSigs(height - 1)) {
+        return Res::ErrDbg("bad-ar-sigs", "anchor signatures are incorrect");
+    }
+
+    auto team = pcustomcsview->GetConfirmTeam(height - 1);
+    if (!team) {
+        return Res::ErrDbg("bad-ar-team", "could not get confirm team for height: %d", height - 1);
+    }
+
+    if (finMsg.sigs.size() < GetMinAnchorQuorum(*team)) {
+        return Res::ErrDbg("bad-ar-sigs-quorum", "anchor sigs (%d) < min quorum (%) ",
+                           finMsg.sigs.size(), GetMinAnchorQuorum(*team));
+    }
+
+    // Make sure anchor block height and hash exist in chain.
+    CBlockIndex* anchorIndex = ::ChainActive()[finMsg.anchorHeight];
+    if (!anchorIndex) {
+        return Res::ErrDbg("bad-ar-height", "Active chain does not contain block height %d. Chain height %d",
+                           finMsg.anchorHeight, ::ChainActive().Height());
+    }
+
+    if (anchorIndex->GetBlockHash() != finMsg.dfiBlockHash) {
+        return Res::ErrDbg("bad-ar-hash", "Anchor and blockchain mismatch at height %d. Expected %s found %s",
+                           finMsg.anchorHeight, anchorIndex->GetBlockHash().ToString(), finMsg.dfiBlockHash.ToString());
+    }
+
+    // check reward sum
+    auto const cbValues = tx.GetValuesOut();
+    if (cbValues.size() != 1 || cbValues.begin()->first != DCT_ID{0})
+        return Res::ErrDbg("bad-ar-wrong-tokens", "anchor reward should be paid in DFI only");
+
+    auto const anchorReward = mnview.GetCommunityBalance(CommunityAccountType::AnchorReward);
+    if (cbValues.begin()->second != anchorReward) {
+        return Res::ErrDbg("bad-ar-amount", "anchor pays wrong amount (actual=%d vs expected=%d)",
+                           cbValues.begin()->second, anchorReward);
+    }
+
+    CTxDestination destination = finMsg.rewardKeyType == 1 ? CTxDestination(PKHash(finMsg.rewardKeyID)) : CTxDestination(WitnessV0KeyHash(finMsg.rewardKeyID));
+    if (tx.vout[1].scriptPubKey != GetScriptForDestination(destination)) {
+        return Res::ErrDbg("bad-ar-dest", "anchor pay destination is incorrect");
+    }
+
+    mnview.SetCommunityBalance(CommunityAccountType::AnchorReward, 0); // just reset
     mnview.AddRewardForAnchor(finMsg.btcTxHash, tx.GetHash());
+
+    // Store reward data for RPC info
+    mnview.AddAnchorConfirmData(CAnchorConfirmDataPlus{finMsg});
 
     return { finMsg.btcTxHash, Res::Ok() };
 }

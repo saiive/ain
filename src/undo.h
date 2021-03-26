@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DEFI_UNDO_H
 #define DEFI_UNDO_H
@@ -53,7 +53,7 @@ public:
             // Old versions stored the version number for the last spend of
             // a transaction's outputs. Non-final spends were indicated with
             // height = 0.
-            unsigned int nVersionDummy;
+            unsigned int nVersionDummy = 0;
             ::Unserialize(s, VARINT(nVersionDummy));
         }
         ::Unserialize(s, CTxOutCompressor(REF(txout->out)));

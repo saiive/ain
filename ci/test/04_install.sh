@@ -2,12 +2,13 @@
 #
 # Copyright (c) 2018 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
-# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+# file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 export LC_ALL=C.UTF-8
 
 mkdir -p "${BASE_SCRATCH_DIR}"
-ccache echo "Creating ccache dir if it didn't already exist"
+#ccache echo "Creating ccache dir if it didn't already exist"
+mkdir -p "${CCACHE_DIR}"
 
 if [ ! -d ${DIR_QA_ASSETS} ]; then
   git clone https://github.com/bitcoin-core/qa-assets ${DIR_QA_ASSETS}

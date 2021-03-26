@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2014-2018 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
-# file COPYING or http://www.opensource.org/licenses/mit-license.php.
+# file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 """Test mempool persistence.
 
 By default, defid will dump mempool on shutdown and
@@ -45,7 +45,7 @@ from test_framework.util import assert_equal, assert_raises_rpc_error, wait_unti
 class MempoolPersistTest(DefiTestFramework):
     def set_test_params(self):
         self.num_nodes = 3
-        self.extra_args = [[], ["-persistmempool=0"], []]
+        self.extra_args = [['-persistmempool=1'], ["-persistmempool=0"], ['-persistmempool=1']]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -119,7 +119,7 @@ class MempoolPersistTest(DefiTestFramework):
         self.log.debug("Stop nodes, make node1 use mempool.dat from node0. Verify it has 5 transactions")
         os.rename(mempooldat0, mempooldat1)
         self.stop_nodes()
-        self.start_node(1, extra_args=[])
+        self.start_node(1, extra_args=["-persistmempool=1"])
         wait_until(lambda: self.nodes[1].getmempoolinfo()["loaded"])
         assert_equal(len(self.nodes[1].getrawmempool()), 5)
 

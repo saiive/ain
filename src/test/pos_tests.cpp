@@ -45,7 +45,7 @@ std::shared_ptr<CBlock> FinalizeBlock(std::shared_ptr<CBlock> pblock, const uint
 //    do {
 //        time++;
 //        pblock->nTime = time;
-//    } while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits,  (int64_t) pblock->nTime, Params().GetConsensus(), masternodeID).hashOk);
+//    } while (!pos::CheckKernelHash(pblock->stakeModifier, pblock->nBits, 1, (int64_t) pblock->nTime, masternodeID, Params().GetConsensus()));
 
     BOOST_CHECK(!pos::SignPosBlock(pblock, minterKey));
 
@@ -58,13 +58,13 @@ BOOST_AUTO_TEST_CASE(calc_kernel)
     uint256 mnID = uint256S("fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321");
     int64_t coinstakeTime = 10000000;
     BOOST_CHECK(uint256S("2a30e655ae8018566092750052a01bdef3ad8e1951beb87a9d503e1bcfe4bd2a") ==
-                pos::CalcKernelHash(stakeModifier, coinstakeTime, mnID, Params().GetConsensus()));
+                pos::CalcKernelHash(stakeModifier, 1, coinstakeTime, mnID, Params().GetConsensus()));
 
     uint32_t target = 0x1effffff;
-    BOOST_CHECK(pos::CheckKernelHash(stakeModifier, target, coinstakeTime, Params().GetConsensus(), mnID).hashOk);
+    BOOST_CHECK(pos::CheckKernelHash(stakeModifier, target, 1, coinstakeTime, 0, mnID, Params().GetConsensus()));
 
     uint32_t unattainableTarget = 0x00ffffff;
-    BOOST_CHECK(!pos::CheckKernelHash(stakeModifier, unattainableTarget, coinstakeTime, Params().GetConsensus(), mnID).hashOk);
+    BOOST_CHECK(!pos::CheckKernelHash(stakeModifier, unattainableTarget, 1, coinstakeTime, 0, mnID, Params().GetConsensus()));
 
 //    CKey key;
 //    key.MakeNewKey(true); // Need to use compressed keys in segwit or the signing will fail
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(contextual_check_pos)
 
     BOOST_CHECK(pos::ContextualCheckProofOfStake((CBlockHeader)Params().GenesisBlock(), Params().GetConsensus(), pcustomcsview.get()));
 
-    uint256 prev_hash = uint256S("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+//    uint256 prev_hash = uint256S("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
     uint64_t height = 0;
     uint64_t mintedBlocks = 1;
     std::shared_ptr<CBlock> block = Block(Params().GenesisBlock().GetHash(), height, mintedBlocks);
@@ -187,8 +187,6 @@ BOOST_AUTO_TEST_CASE(sign_pos_block)
     uint64_t mintedBlocks = 1;
     std::shared_ptr<CBlock> block = Block(prev_hash, height, mintedBlocks);
 
-    static uint64_t time = Params().GenesisBlock().nTime;
-
     block->stakeModifier = pos::ComputeStakeModifier(prev_hash, minterKey.GetPubKey().GetID());
 
     block->hashMerkleRoot = BlockMerkleRoot(*block);
@@ -199,7 +197,7 @@ BOOST_AUTO_TEST_CASE(sign_pos_block)
 
     BOOST_CHECK(!pos::CheckProofOfStake(*(CBlockHeader*)block.get(), ::ChainActive().Tip(), Params().GetConsensus(), pcustomcsview.get()));
 
-    uint256 prevStakeModifier = Params().GenesisBlock().stakeModifier;
+//    uint256 prevStakeModifier = Params().GenesisBlock().stakeModifier;
 //    std::shared_ptr<CBlock> correctBlock = FinalizeBlock(
 //            Block(Params().GenesisBlock().GetHash(), 1, 1),
 //            masternodeID,

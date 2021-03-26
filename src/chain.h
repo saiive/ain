@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DEFI_CHAIN_H
 #define DEFI_CHAIN_H
@@ -21,6 +21,8 @@
  * current network-adjusted time before the block will be accepted.
  */
 static constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
+
+static constexpr int64_t MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT = 5 * 60;
 
 /**
  * Timestamp window used as a grace period by code that compares external

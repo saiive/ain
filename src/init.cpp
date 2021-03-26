@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
 #include <config/defi-config.h>
@@ -28,6 +28,7 @@
 #include <masternodes/accountshistory.h>
 #include <masternodes/anchors.h>
 #include <masternodes/criminals.h>
+#include <masternodes/masternodes.h>
 #include <miner.h>
 #include <net.h>
 #include <net_permissions.h>
@@ -265,7 +266,7 @@ void Shutdown(InitInterfaces& interfaces)
     // up with our current chain to avoid any strange pruning edge cases and make
     // next startup faster by avoiding rescan.
 
-    LogPrintf("spv: Releasing\n");
+    LogPrint(BCLog::SPV, "Releasing\n");
     spv::pspv.reset();
     {
         LOCK(cs_main);
@@ -458,17 +459,16 @@ void SetupServerArgs()
     gArgs.AddArg("-dummypos", "Flag to skip PoS-related checks (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-txnotokens", "Flag to force old tx serialization (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-anchorquorum", "Min quorum size (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
-    gArgs.AddArg("-anchorsbinding", "Strict binding of defi chain to btc anchors (default: true)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
-    gArgs.AddArg("-spv", "Enable SPV to bitcoin blockchain (default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-fakespv", "Fake SPV for testing purposes (default: 0, regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-spv", "Enable SPV to bitcoin blockchain (default: 0, unless masternode)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-criminals", "punishment of criminal nodes (default: 0, regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_resync", "Flag to reset spv database and resync from zero block (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-spv_testnet", "Flag to use bitcoin testnet instead of main (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_rescan", "Block height to rescan from (default: 0 = off)", ArgsManager::ALLOW_INT, OptionsCategory::OPTIONS);
     gArgs.AddArg("-amkheight", "AMK fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-bayfrontheight", "Bayfront fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-bayfrontgardensheight", "Bayfront Gardens fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-clarkequayheight", "ClarkeQuay fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
+    gArgs.AddArg("-dakotaheight", "Dakota fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
+    gArgs.AddArg("-dakotacrescentheight", "DakotaCrescent fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
 #ifdef USE_UPNP
 #if USE_UPNP
     gArgs.AddArg("-upnp", "Use UPnP to map the listening port (default: 1 when listening and no -proxy)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -1605,16 +1605,19 @@ bool AppInitMain(InitInterfaces& interfaces)
                 panchorAwaitingConfirms.reset();
                 panchorAwaitingConfirms = MakeUnique<CAnchorAwaitingConfirms>();
                 panchors.reset();
-                /// @todo research best way of spv+anchors loading/update/regeneration
-                panchors = MakeUnique<CAnchorIndex>(nDefaultDbCache << 20, false, gArgs.GetBoolArg("-spv", false) && gArgs.GetBoolArg("-spv_resync", false) /*fReset || fReindexChainState*/);
+                // If users set masternode_operator set SPV default to enabled
+                bool anchorsEnabled{!gArgs.GetArgs("-masternode_operator").empty()};
+                panchors = MakeUnique<CAnchorIndex>(nDefaultDbCache << 20, false, gArgs.GetBoolArg("-spv", anchorsEnabled) && gArgs.GetBoolArg("-spv_resync", false) /*fReset || fReindexChainState*/);
                 // load anchors after spv due to spv (and spv height) not set before (no last height yet)
 
-                if (gArgs.GetBoolArg("-spv", false)) {
+                if (gArgs.GetBoolArg("-spv", anchorsEnabled)) {
                     spv::pspv.reset();
-                    if (gArgs.GetBoolArg("-fakespv", false) && Params().NetworkIDString() == "regtest") {
+                    if (Params().NetworkIDString() == "regtest") {
                         spv::pspv = MakeUnique<spv::CFakeSpvWrapper>();
+                    } else if (Params().NetworkIDString() == "test") {
+                        spv::pspv = MakeUnique<spv::CSpvWrapper>(false, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
                     } else {
-                        spv::pspv = MakeUnique<spv::CSpvWrapper>(!gArgs.GetBoolArg("-spv_testnet", false), nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
+                        spv::pspv = MakeUnique<spv::CSpvWrapper>(true, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", false));
                     }
                 }
                 panchors->Load();
@@ -1933,7 +1936,6 @@ bool AppInitMain(InitInterfaces& interfaces)
             operatorsSet.insert(op);
 
             pos::ThreadStaker::Args stakerParams;
-            auto& minterKey = stakerParams.minterKey;
             auto& operatorId = stakerParams.operatorID;
             auto& coinbaseScript = stakerParams.coinbaseScript;
 
@@ -1948,14 +1950,14 @@ bool AppInitMain(InitInterfaces& interfaces)
 
             bool found = false;
             for (auto wallet : wallets) {
-                if (wallet->GetKey(operatorId, minterKey)) {
+                if (::IsMine(*wallet, destination)) {
                     found = true;
                     break;
                 }
             }
 
             if (!found) {
-                LogPrintf("Error: masternode operator (%s) private key not found\n", op);
+                LogPrintf("Error: masternode operator (%s) private key is not owned by the wallet\n", op);
                 continue;
             }
 

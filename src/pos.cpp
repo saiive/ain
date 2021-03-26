@@ -57,36 +57,27 @@ bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensu
         return false;
     }
     uint256 masternodeID;
+    int64_t creationHeight;
     {
         // check that block minter exists and active at the height of the block
         AssertLockHeld(cs_main);
-        auto it = mnView->GetMasternodeIdByOperator(minter);
-
-        /// @todo check height of history frame here (future and past)
-        if (!it || !mnView->GetMasternode(*it)->IsActive(blockHeader.height))
-        {
+        auto optMasternodeID = pcustomcsview->GetMasternodeIdByOperator(minter);
+        if (!optMasternodeID) {
             return false;
         }
-        masternodeID = *it;
+        masternodeID = *optMasternodeID;
+        auto nodePtr = pcustomcsview->GetMasternode(masternodeID);
+        if (!nodePtr || !nodePtr->IsActive(blockHeader.height)) {
+            return false;
+        }
+        creationHeight = int64_t(nodePtr->creationHeight);
     }
     // checking PoS kernel is faster, so check it first
-    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, (int64_t) blockHeader.GetBlockTime(), params, masternodeID).hashOk) {
+    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, creationHeight, (int64_t) blockHeader.GetBlockTime(), blockHeader.height, masternodeID, params)) {
         return false;
     }
 
-    {
-        AssertLockHeld(cs_main);
-        uint32_t const mintedBlocksMaxDiff = static_cast<uint64_t>(mnView->GetLastHeight()) > blockHeader.height ? mnView->GetLastHeight() - blockHeader.height : blockHeader.height - mnView->GetLastHeight();
-        // minter exists and active at the height of the block - it was checked before
-        uint32_t const mintedBlocks = mnView->GetMasternode(masternodeID)->mintedBlocks;
-        uint32_t const mintedBlocksDiff = mintedBlocks > blockHeader.mintedBlocks ? mintedBlocks - blockHeader.mintedBlocks : blockHeader.mintedBlocks - mintedBlocks;
-
-        /// @todo this is not so trivial as it seems! do we need an additional check?
-//        if (mintedBlocksDiff > mintedBlocksMaxDiff)
-//        {
-//            return false;
-//        }
-    }
+    /// @todo Make sure none mint a big amount of continuous blocks
 
     return CheckHeaderSignature(blockHeader);
 }

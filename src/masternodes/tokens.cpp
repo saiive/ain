@@ -1,6 +1,6 @@
 // Copyright (c) 2020 The DeFi Foundation
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #include <masternodes/tokens.h>
 
@@ -48,7 +48,7 @@ boost::optional<std::pair<DCT_ID, std::unique_ptr<CToken> > > CTokensView::GetTo
 
     if (ReadBy<Symbol, std::string>(symbolKey, varint)) {
 //        assert(id >= DCT_ID_START);// ? not needed anymore?
-        return { std::make_pair(id, std::move(GetToken(id)))};
+        return std::make_pair(id, GetToken(id));
     }
     return {};
 }

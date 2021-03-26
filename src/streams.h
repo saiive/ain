@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2018 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
-// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+// file LICENSE or http://www.opensource.org/licenses/mit-license.php.
 
 #ifndef DEFI_STREAMS_H
 #define DEFI_STREAMS_H
@@ -852,14 +852,13 @@ public:
     //! search for a given byte in the stream, and remain positioned on it
     void FindByte(char ch) {
         while (true) {
-            if (nReadPos == nSrcPos)
-                if (!Fill())
-                    throw std::ios_base::failure("CBufferedFile::FindByte: fail to read");
-                if (nReadPos >= vchBuf.size())
-                    throw std::ios_base::failure("CBufferedFile::FindByte: fail to find");
-                if (vchBuf[nReadPos] == ch)
-                    break;
-                nReadPos++;
+            if (nReadPos == nSrcPos && !Fill())
+                throw std::ios_base::failure("CBufferedFile::FindByte: fail to read");
+            if (nReadPos >= vchBuf.size())
+                throw std::ios_base::failure("CBufferedFile::FindByte: fail to find");
+            if (vchBuf[nReadPos] == ch)
+                break;
+            nReadPos++;
         }
     }
 };
