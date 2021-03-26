@@ -15,5 +15,3 @@ VOLUME ["/data"]
 
 USER defi:defi
 CMD [ "/app/bin/defid" ]
-
-EXPOSE 8555 8554 18555 18554 19555 19554
