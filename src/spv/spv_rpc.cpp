@@ -1374,6 +1374,56 @@ static UniValue spv_listreceivedbyaddress(const JSONRPCRequest& request)
     return spv::pspv->ListReceived(nMinDepth, address);
 }
 
+static UniValue spv_validateaddress(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"spv_validateaddress",
+        "\nCheck whether the given Bitcoin address is valid.\n",
+        {
+            {"address", RPCArg::Type::STR, RPCArg::Optional::NO, "The Bitcoin address to validate"},
+        },
+        RPCResult{
+            "{\n"
+            "  \"isvalid\" : true|false,       (boolean) If the address is valid or not.\n"
+            "  \"ismine\" : true|false,        (boolean) If the address belongs to the wallet.\n"
+            "}\n"
+        },
+        RPCExamples{
+            HelpExampleCli("spv_validateaddress", "\"1PSSGeFHDnKNxiEyFrD1wcEaHr9hrQDDWc\"")
+            + HelpExampleRpc("spv_validateaddress", "\"1PSSGeFHDnKNxiEyFrD1wcEaHr9hrQDDWc\"")
+        },
+    }.Check(request);
+
+    if (!spv::pspv)
+    {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    return spv::pspv->ValidateAddress(request.params[0].get_str().c_str());
+}
+
+static UniValue spv_getalladdresses(const JSONRPCRequest& request)
+{
+    RPCHelpMan{"spv_getalladdresses",
+        "\nReturns all user Bitcoin addresses.\n",
+        {
+        },
+        RPCResult{
+            "\"array\"                  (Array of user addresses)\n"
+        },
+        RPCExamples{
+            HelpExampleCli("spv_getalladdresses", "")
+            + HelpExampleRpc("spv_getalladdresses", "")
+        },
+    }.Check(request);
+
+    if (!spv::pspv)
+    {
+        throw JSONRPCError(RPC_INVALID_REQUEST, "spv module disabled");
+    }
+
+    return spv::pspv->GetAllAddress();
+}
+
 
 static const CRPCCommand commands[] =
 { //  category          name                        actor (function)            params
@@ -1405,6 +1455,8 @@ static const CRPCCommand commands[] =
   { "spv",      "spv_decodehtlcscript",       &spv_decodehtlcscript,      { "redeemscript" }  },
   { "spv",      "spv_gethtlcseed",            &spv_gethtlcseed,           { "address" }  },
   { "spv",      "spv_listreceivedbyaddress",  &spv_listreceivedbyaddress, { "minconf", "address_filter" }  },
+  { "spv",      "spv_validateaddress",        &spv_validateaddress,       { "address"}  },
+  { "spv",      "spv_getalladdresses",        &spv_getalladdresses,       { }  },
   { "hidden",   "spv_setlastheight",          &spv_setlastheight,         { "height" }  },
   { "hidden",   "spv_fundaddress",            &spv_fundaddress,           { "address" }  },
 };

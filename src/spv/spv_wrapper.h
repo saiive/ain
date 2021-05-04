@@ -130,6 +130,10 @@ public:
     void OnSavePeers(int replace, const BRPeer peers[], size_t peersCount);
     void OnThreadCleanup();
 
+    /// Wallet notifications
+    void OnBlockNotify(const UInt256& blockHash);
+    void OnTxNotify(const UInt256& txHash);
+
     // Get time stamp of Bitcoin TX
     uint32_t ReadTxTimestamp(uint256 const & hash);
 
@@ -142,7 +146,9 @@ public:
     std::string DumpBitcoinPrivKey(const CWallet* pwallet, const std::string &strAddress);
     UniValue GetAddressPubkey(const CWallet *pwallet, const char *addr); // Used in HTLC creation
     CKeyID GetAddressKeyID(const char *addr);
+    UniValue GetAllAddress();
     SPVTxType IsMine(const char *address);
+    UniValue ValidateAddress(const char *address);
 
     // Bitcoin Transaction related calls
     int64_t GetBitcoinBalance();
