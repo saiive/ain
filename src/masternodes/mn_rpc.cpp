@@ -100,7 +100,7 @@ CAccounts SelectAccountsByTargetBalances(const CAccounts& accounts, const CBalan
     return selectedAccountsBalances;
 }
 
-CMutableTransaction fund(CMutableTransaction & mtx, CWallet* const pwallet, CTransactionRef optAuthTx, CCoinControl* coin_control, bool lockUnspents) {
+CMutableTransaction fund(CMutableTransaction & mtx, CWallet* const pwallet, CTransactionRef optAuthTx, CCoinControl* coin_control) {
     CAmount fee_out;
     int change_position = mtx.vout.size();
 
@@ -119,6 +119,9 @@ CMutableTransaction fund(CMutableTransaction & mtx, CWallet* const pwallet, CTra
         }
     }
 
+    // we does not honor non locking spends anymore
+    // it ensures auto auth not overlap regular tx inputs
+    const bool lockUnspents = true;
     if (!pwallet->FundTransaction(mtx, fee_out, change_position, strFailReason, lockUnspents, {} /*setSubtractFeeFromOutputs*/, coinControl)) {
         throw JSONRPCError(RPC_WALLET_ERROR, strFailReason);
     }
@@ -250,7 +253,10 @@ static boost::optional<CTxIn> GetAuthInputOnly(CWallet* const pwallet, CTxDestin
     if (vecOutputs.empty()) {
         return {};
     }
-    return { CTxIn(vecOutputs[0].tx->GetHash(), vecOutputs[0].i) };
+    // any selected inputs should be mark as locked
+    CTxIn txin(vecOutputs[0].tx->GetHash(), vecOutputs[0].i);
+    pwallet->LockCoin(txin.prevout);
+    return txin;
 }
 
 CTransactionRef CreateAuthTx(CWallet* const pwallet, std::set<CScript> const & auths, int32_t txVersion) {
@@ -274,7 +280,7 @@ CTransactionRef CreateAuthTx(CWallet* const pwallet, std::set<CScript> const & a
         // Create output to cover 1KB transaction
         CTxOut authOut(GetMinimumFee(*pwallet, 1000, coinControl, nullptr), auth);
         mtx.vout.push_back(authOut);
-        fund(mtx, pwallet, {}, &coinControl, true /*lockUnspents*/);
+        fund(mtx, pwallet, {}, &coinControl);
 
         // AutoAuthPrep, auth output and change
         if (mtx.vout.size() == 3) {
@@ -293,7 +299,7 @@ CTransactionRef CreateAuthTx(CWallet* const pwallet, std::set<CScript> const & a
         mtx.vout.push_back(authOut);
     }
 
-    return fund(mtx, pwallet, {}, &coinControl, true /*lockUnspents*/), sign(mtx, pwallet, {});
+    return fund(mtx, pwallet, {}, &coinControl), sign(mtx, pwallet, {});
 }
 
 static boost::optional<CTxIn> GetAnyFoundationAuthInput(CWallet* const pwallet) {
@@ -378,39 +384,6 @@ CWallet* GetWallet(const JSONRPCRequest& request) {
 
     EnsureWalletIsAvailable(pwallet, request.fHelp);
     return pwallet;
-}
-
-CPubKey PublickeyFromString(const std::string &pubkey)
-{
-    if (!IsHex(pubkey) || (pubkey.length() != 66 && pubkey.length() != 130))
-    {
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid public key: " + pubkey);
-    }
-
-    return HexToPubKey(pubkey);
-}
-
-CScript CreateScriptForHTLC(const JSONRPCRequest& request, uint32_t& blocks, std::vector<unsigned char>& image)
-{
-    CPubKey seller_key = PublickeyFromString(request.params[0].get_str());
-    CPubKey refund_key = PublickeyFromString(request.params[1].get_str());
-
-    {
-        UniValue timeout;
-        if (!timeout.read(std::string("[") + request.params[2].get_str() + std::string("]")) || !timeout.isArray() || timeout.size() != 1)
-        {
-            throw JSONRPCError(RPC_TYPE_ERROR, "Error parsing JSON: " + request.params[3].get_str());
-        }
-
-        blocks = timeout[0].get_int();
-    }
-
-    if (blocks >= CTxIn::SEQUENCE_LOCKTIME_TYPE_FLAG)
-    {
-        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid block denominated relative timeout");
-    }
-
-    return GetScriptForHTLC(seller_key, refund_key, image, blocks);
 }
 
 UniValue setgov(const JSONRPCRequest& request) {
