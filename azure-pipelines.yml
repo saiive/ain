@@ -87,6 +87,7 @@ stages:
         dockerfile: $(dockerfilePath)
         buildContext: $(Build.SourcesDirectory)
         arguments: --build-arg VERSION=$(tag)
+        containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
           alpha
