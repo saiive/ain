@@ -8,6 +8,7 @@
 #include <masternodes/mn_checks.h>
 
 #include <chainparams.h>
+#include <consensus/merkle.h>
 #include <net_processing.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -27,6 +28,7 @@ const unsigned char DB_MN_OPERATORS = 'o';    // masternodes' operators index
 const unsigned char DB_MN_OWNERS = 'w';       // masternodes' owners index
 const unsigned char DB_MN_STAKER = 'X';       // masternodes' last staked block time
 const unsigned char DB_MN_HEIGHT = 'H';       // single record with last processed chain height
+const unsigned char DB_MN_VERSION = 'D';
 const unsigned char DB_MN_ANCHOR_REWARD = 'r';
 const unsigned char DB_MN_ANCHOR_CONFIRM = 'x';
 const unsigned char DB_MN_CURRENT_TEAM = 't';
@@ -380,7 +382,7 @@ void CMasternodesView::SetMasternodeLastBlockTime(const CKeyID & minter, const u
     WriteBy<Staker>(MNBlockTimeKey{*nodeId, blockHeight}, time);
 }
 
-boost::optional<int64_t> CMasternodesView::GetMasternodeLastBlockTime(const CKeyID & minter)
+boost::optional<int64_t> CMasternodesView::GetMasternodeLastBlockTime(const CKeyID & minter, const uint32_t height)
 {
     auto nodeId = GetMasternodeIdByOperator(minter);
     assert(nodeId);
@@ -396,7 +398,7 @@ boost::optional<int64_t> CMasternodesView::GetMasternodeLastBlockTime(const CKey
 
         // Get first result only and exit
         return false;
-    }, MNBlockTimeKey{*nodeId, std::numeric_limits<uint32_t>::max()});
+    }, MNBlockTimeKey{*nodeId, height - 1});
 
     if (time)
     {
@@ -416,25 +418,29 @@ void CMasternodesView::ForEachMinterNode(std::function<bool(MNBlockTimeKey const
     ForEach<Staker, MNBlockTimeKey, int64_t>(callback, start);
 }
 
-//void CMasternodesView::UnCreateMasternode(const uint256 & nodeId)
-//{
-//    auto node = GetMasternode(nodeId);
-//    if (node) {
-//        EraseBy<ID>(nodeId);
-//        EraseBy<Operator>(node->operatorAuthAddress);
-//        EraseBy<Owner>(node->ownerAuthAddress);
-//    }
-//}
+Res CMasternodesView::UnCreateMasternode(const uint256 & nodeId)
+{
+    auto node = GetMasternode(nodeId);
+    if (node) {
+        EraseBy<ID>(nodeId);
+        EraseBy<Operator>(node->operatorAuthAddress);
+        EraseBy<Owner>(node->ownerAuthAddress);
+        return Res::Ok();
+    }
+    return Res::Err("No such masternode %s", nodeId.GetHex());
+}
 
-//void CMasternodesView::UnResignMasternode(const uint256 & nodeId, const uint256 & resignTx)
-//{
-//    auto node = GetMasternode(nodeId);
-//    if (node && node->resignTx == resignTx) {
-//        node->resignHeight = -1;
-//        node->resignTx = {};
-//        WriteBy<ID>(nodeId, *node);
-//    }
-//}
+Res CMasternodesView::UnResignMasternode(const uint256 & nodeId, const uint256 & resignTx)
+{
+    auto node = GetMasternode(nodeId);
+    if (node && node->resignTx == resignTx) {
+        node->resignHeight = -1;
+        node->resignTx = {};
+        WriteBy<ID>(nodeId, *node);
+        return Res::Ok();
+    }
+    return Res::Err("No such masternode %s, resignTx: %s", nodeId.GetHex(), resignTx.GetHex());
+}
 
 /*
  *  CLastHeightView
@@ -583,6 +589,19 @@ std::vector<CAnchorConfirmDataPlus> CAnchorConfirmsView::GetAnchorConfirmData()
 /*
  *  CCustomCSView
  */
+int CCustomCSView::GetDbVersion() const
+{
+    int version;
+    if (Read(DB_MN_VERSION, version))
+        return version;
+    return 0;
+}
+
+void CCustomCSView::SetDbVersion(int version)
+{
+    Write(DB_MN_VERSION, version);
+}
+
 CTeamView::CTeam CCustomCSView::CalcNextTeam(const uint256 & stakeModifier)
 {
     if (stakeModifier == uint256())
@@ -699,12 +718,12 @@ void CCustomCSView::CreateAndRelayConfirmMessageIfNeed(const CAnchorIndex::Ancho
 
 void CCustomCSView::OnUndoTx(uint256 const & txid, uint32_t height)
 {
-    const auto undo = this->GetUndo(UndoKey{height, txid});
+    const auto undo = GetUndo(UndoKey{height, txid});
     if (!undo) {
         return; // not custom tx, or no changes done
     }
-    CUndo::Revert(this->GetRaw(), *undo); // revert the changes of this tx
-    this->DelUndo(UndoKey{height, txid}); // erase undo data, it served its purpose
+    CUndo::Revert(GetStorage(), *undo); // revert the changes of this tx
+    DelUndo(UndoKey{height, txid}); // erase undo data, it served its purpose
 }
 
 bool CCustomCSView::CanSpend(const uint256 & txId, int height) const
@@ -721,93 +740,46 @@ bool CCustomCSView::CanSpend(const uint256 & txId, int height) const
     return !pair || pair->second.destructionTx != uint256{} || pair->second.IsPoolShare();
 }
 
-enum accountHistoryType {
-    None = 0,
-    MineOnly,
-    Full,
-};
-
-CAccountsHistoryStorage::CAccountsHistoryStorage(CCustomCSView & storage, uint32_t height, uint32_t txn, const uint256& txid, uint8_t type)
-    : CStorageView(new CFlushableStorageKV(storage.GetRaw())), height(height), txn(txn), txid(txid), type(type)
+bool CCustomCSView::CalculateOwnerRewards(CScript const & owner, uint32_t targetHeight)
 {
-    acindex = gArgs.GetBoolArg("-acindex-mineonly", DEFAULT_ACINDEX_MINEONLY) ? accountHistoryType::MineOnly :
-              gArgs.GetBoolArg("-acindex", DEFAULT_ACINDEX) ? accountHistoryType::Full : accountHistoryType::None;
-}
-
-Res CAccountsHistoryStorage::AddBalance(CScript const & owner, CTokenAmount amount)
-{
-    auto res = CCustomCSView::AddBalance(owner, amount);
-    if (acindex && res.ok && amount.nValue != 0) {
-        diffs[owner][amount.nTokenId] += amount.nValue;
+    auto balanceHeight = GetBalancesHeight(owner);
+    if (balanceHeight >= targetHeight) {
+        return false;
     }
-    return res;
-}
-
-Res CAccountsHistoryStorage::SubBalance(CScript const & owner, CTokenAmount amount)
-{
-    auto res = CCustomCSView::SubBalance(owner, amount);
-    if (acindex && res.ok && amount.nValue != 0) {
-        diffs[owner][amount.nTokenId] -= amount.nValue;
-    }
-    return res;
-}
-
-bool CAccountsHistoryStorage::Flush()
-{
-    if (acindex) {
-        auto wallets = GetWallets();
-        for (const auto& diff : diffs) {
-            bool isMine = false;
-            for (auto wallet : wallets) {
-                if ((isMine = IsMineCached(*wallet, diff.first) & ISMINE_ALL)) {
-                    SetMineAccountHistory({diff.first, height, txn}, {txid, type, diff.second});
-                    break;
+    ForEachPoolId([&] (DCT_ID const & poolId) {
+        auto height = GetShare(poolId, owner);
+        if (!height || *height >= targetHeight) {
+            return true; // no share or target height is before a pool share' one
+        }
+        auto onLiquidity = [&]() -> CAmount {
+            return GetBalance(owner, poolId).nValue;
+        };
+        auto beginHeight = std::max(*height, balanceHeight);
+        CalculatePoolRewards(poolId, onLiquidity, beginHeight, targetHeight,
+            [&](RewardType, CTokenAmount amount, uint32_t height) {
+                auto res = AddBalance(owner, amount);
+                if (!res) {
+                    LogPrintf("Pool rewards: can't update balance of %s: %s, height %ld\n", owner.GetHex(), res.msg, targetHeight);
                 }
             }
-            if (!isMine && acindex == accountHistoryType::Full) {
-                SetAllAccountHistory({diff.first, height, txn}, {txid, type, diff.second});
-            }
-        }
-    }
-    return CCustomCSView::Flush();
+        );
+        return true;
+    });
+
+    return UpdateBalancesHeight(owner, targetHeight);
 }
 
-CRewardsHistoryStorage::CRewardsHistoryStorage(CCustomCSView & storage, uint32_t height)
-    : CStorageView(new CFlushableStorageKV(storage.GetRaw())), height(height)
-{
-    acindex = gArgs.GetBoolArg("-acindex-mineonly", DEFAULT_ACINDEX_MINEONLY) ? accountHistoryType::MineOnly :
-              gArgs.GetBoolArg("-acindex", DEFAULT_ACINDEX) ? accountHistoryType::Full : accountHistoryType::None;
-}
-
-Res CRewardsHistoryStorage::AddBalance(CScript const & owner, DCT_ID poolID, uint8_t type, CTokenAmount amount)
-{
-    auto res = CCustomCSView::AddBalance(owner, amount);
-    if (acindex && res.ok && amount.nValue > 0) {
-        auto& map = diffs[std::make_pair(owner, type)];
-        map[poolID][amount.nTokenId] += amount.nValue;
+uint256 CCustomCSView::MerkleRoot() {
+    auto& rawMap = GetStorage().GetRaw();
+    if (rawMap.empty()) {
+        return {};
     }
-    return res;
-}
-
-bool CRewardsHistoryStorage::Flush()
-{
-    if (acindex) {
-        auto wallets = GetWallets();
-        for (const auto& diff : diffs) {
-            bool isMine = false;
-            const auto& pair = diff.first;
-            for (auto wallet : wallets) {
-                if ((isMine = IsMineCached(*wallet, pair.first) & ISMINE_ALL)) {
-                    SetMineRewardHistory({pair.first, height, pair.second}, diff.second);
-                    break;
-                }
-            }
-            if (!isMine && acindex == accountHistoryType::Full) {
-                SetAllRewardHistory({pair.first, height, pair.second}, diff.second);
-            }
-        }
+    std::vector<uint256> hashes;
+    for (const auto& it : rawMap) {
+        auto value = it.second ? *it.second : TBytes{};
+        hashes.push_back(Hash2(it.first, value));
     }
-    return CCustomCSView::Flush();
+    return ComputeMerkleRoot(std::move(hashes));
 }
 
 std::map<CKeyID, CKey> AmISignerNow(CAnchorData::CTeam const & team)
