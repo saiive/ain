@@ -53,10 +53,9 @@ stages:
     - checkout: self
       submodules: true
       persistCredentials: true
-    # set version (if triggered from release branch or tag)
     - script: |
-      VERSION=$(echo "$(Build.SourceBranch)" | grep -o '[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?')
-      echo "##vso[task.setvariable variable=RELEASE_VERSION;]$VERSION"
+        VERSION=$(echo "$(Build.SourceBranch)" | grep -o '[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?')
+        echo "##vso[task.setvariable variable=RELEASE_VERSION;]$VERSION"
       
     displayName: 'Parse and set release version'
     condition: or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release'), startsWith(variables['Build.SourceBranch'], 'refs/tags'), startsWith(variables['Build.SourceBranch'], 'refs/heads/master'))
