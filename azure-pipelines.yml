@@ -4,6 +4,7 @@
 
 trigger:
 - master
+- 1.*
 
 resources:
 - repo: self
