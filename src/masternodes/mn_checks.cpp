@@ -597,8 +597,15 @@ public:
         return Res::Ok();
     }
 
+    // we need proxy view to prevent add/sub balance record
+    void CalculateOwnerRewards(const CScript& owner) const {
+        CCustomCSView view(mnview);
+        view.CalculateOwnerRewards(owner, height);
+        view.Flush();
+    }
+
     Res subBalanceDelShares(const CScript& owner, const CBalances& balance) const {
-        mnview.CalculateOwnerRewards(owner, height);
+        CalculateOwnerRewards(owner);
         auto res = mnview.SubBalances(owner, balance);
         if (!res) {
             return Res::ErrCode(CustomTxErrCodes::NotEnoughBalance, res.msg);
@@ -607,7 +614,7 @@ public:
     }
 
     Res addBalanceSetShares(const CScript& owner, const CBalances& balance) const {
-        mnview.CalculateOwnerRewards(owner, height);
+        CalculateOwnerRewards(owner);
         auto res = mnview.AddBalances(owner, balance);
         return !res ? res : setShares(owner, balance.balances);
     }
@@ -801,7 +808,7 @@ public:
             if (!minted) {
                 return minted;
             }
-            mnview.CalculateOwnerRewards(*mintable.val, height);
+            CalculateOwnerRewards(*mintable.val);
             auto res = mnview.AddBalance(*mintable.val, CTokenAmount{kv.first, kv.second});
             if (!res) {
                 return res;
@@ -908,8 +915,8 @@ public:
             if (!res) {
                 return res;
             }
-            mnview.CalculateOwnerRewards(obj.from, height);
-            mnview.CalculateOwnerRewards(obj.to, height);
+            CalculateOwnerRewards(obj.from);
+            CalculateOwnerRewards(obj.to);
             res = mnview.SubBalance(obj.from, {obj.idTokenFrom, obj.amountFrom});
             return !res ? res : mnview.AddBalance(obj.to, tokenAmount);
         }, static_cast<int>(height));
@@ -941,7 +948,7 @@ public:
         }
 
         for (const auto& kv : obj.from) {
-            mnview.CalculateOwnerRewards(kv.first, height);
+            CalculateOwnerRewards(kv.first);
             auto res = mnview.SubBalances(kv.first, kv.second);
             if (!res) {
                 return res;
@@ -997,7 +1004,7 @@ public:
 
         auto res = pool.RemoveLiquidity(amount.nValue, [&] (CAmount amountA, CAmount amountB) {
 
-            mnview.CalculateOwnerRewards(from, height);
+            CalculateOwnerRewards(from);
             CBalances balances{TAmounts{{pool.idTokenA, amountA}, {pool.idTokenB, amountB}}};
             return mnview.AddBalances(from, balances);
         });
@@ -1165,6 +1172,7 @@ public:
 
             // subtract the balance from tokenFrom to dedicate them for the order
             CScript txidAddr(order.creationTx.begin(), order.creationTx.end());
+            CalculateOwnerRewards(order.ownerAddress);
             res = ICXTransfer(order.idToken, order.amountFrom, order.ownerAddress, txidAddr);
         }
 
@@ -1204,6 +1212,7 @@ public:
         }
 
         // locking takerFee in offer txidaddr
+        CalculateOwnerRewards(makeoffer.ownerAddress);
         res = ICXTransfer(DCT_ID{0}, makeoffer.takerFee, makeoffer.ownerAddress, txidAddr);
 
         return !res ? res : mnview.ICXMakeOffer(makeoffer);
@@ -1262,6 +1271,7 @@ public:
 
             // refund the rest of locked takerFee if there is difference
             if (offer->takerFee - takerFee) {
+                CalculateOwnerRewards(offer->ownerAddress);
                 res = ICXTransfer(DCT_ID{0}, offer->takerFee - takerFee, offerTxidAddr, offer->ownerAddress);
                 if (!res)
                     return res;
@@ -1277,6 +1287,7 @@ public:
                 return res;
 
             // burn makerDeposit
+            CalculateOwnerRewards(order->ownerAddress);
             res = ICXTransfer(DCT_ID{0}, offer->takerFee, order->ownerAddress, consensus.burnAddress);
             if (!res)
                 return res;
@@ -1287,6 +1298,7 @@ public:
                 return Res::Err("tx must have at least one input from offer owner");
 
             srcAddr = offer->ownerAddress;
+            CalculateOwnerRewards(offer->ownerAddress);
 
             auto exthtlc = mnview.HasICXSubmitEXTHTLCOpen(submitdfchtlc.offerTx);
             if (!exthtlc)
@@ -1309,6 +1321,7 @@ public:
 
         // subtract the balance from order txidaddr or offer owner address and dedicate them for the dfc htlc
         CScript htlcTxidAddr(submitdfchtlc.creationTx.begin(), submitdfchtlc.creationTx.end());
+
         res = ICXTransfer(order->idToken, submitdfchtlc.amount, srcAddr, htlcTxidAddr);
         return !res ? res : mnview.ICXSubmitDFCHTLC(submitdfchtlc);
     }
@@ -1381,6 +1394,7 @@ public:
 
             // refund the rest of locked takerFee if there is difference
             if (offer->takerFee - takerFee) {
+                CalculateOwnerRewards(offer->ownerAddress);
                 res = ICXTransfer(DCT_ID{0}, offer->takerFee - takerFee, offerTxidAddr, offer->ownerAddress);
                 if (!res)
                     return res;
@@ -1390,12 +1404,13 @@ public:
                 mnview.ICXUpdateMakeOffer(*offer);
             }
 
-            // takerFee
+            // burn takerFee
             res = ICXTransfer(DCT_ID{0}, offer->takerFee, offerTxidAddr, consensus.burnAddress);
             if (!res)
                 return res;
 
-            // makerFee
+            // burn makerDeposit
+            CalculateOwnerRewards(order->ownerAddress);
             res = ICXTransfer(DCT_ID{0}, offer->takerFee, order->ownerAddress, consensus.burnAddress);
         }
 
@@ -1443,9 +1458,13 @@ public:
             return Res::Err("cannot claim, external htlc for this offer does not exists or expired!");
 
         // claim DFC HTLC to receiveAddress
+        CalculateOwnerRewards(order->ownerAddress);
         CScript htlcTxidAddr(dfchtlc->creationTx.begin(), dfchtlc->creationTx.end());
         if (order->orderType == CICXOrder::TYPE_INTERNAL)
+        {
+            CalculateOwnerRewards(offer->ownerAddress);
             res = ICXTransfer(order->idToken, dfchtlc->amount, htlcTxidAddr, offer->ownerAddress);
+        }
         else if (order->orderType == CICXOrder::TYPE_EXTERNAL)
             res = ICXTransfer(order->idToken, dfchtlc->amount, htlcTxidAddr, order->ownerAddress);
         if (!res)
@@ -1528,6 +1547,7 @@ public:
         if (order->orderType == CICXOrder::TYPE_INTERNAL && order->amountToFill > 0) {
             // subtract the balance from txidAddr and return to owner
             CScript txidAddr(order->creationTx.begin(), order->creationTx.end());
+            CalculateOwnerRewards(order->ownerAddress);
             res = ICXTransfer(order->idToken, order->amountToFill, txidAddr, order->ownerAddress);
             if (!res)
                 return res;
@@ -1569,12 +1589,27 @@ public:
         offer->closeTx = closeoffer.creationTx;
         offer->closeHeight = closeoffer.creationHeight;
 
-        if (order->orderType == CICXOrder::TYPE_EXTERNAL) {
+        if (order->orderType == CICXOrder::TYPE_INTERNAL && !mnview.HasICXSubmitDFCHTLCOpen(offer->creationTx)) {
+            // subtract takerFee from txidAddr and return to owner
+            CScript txidAddr(offer->creationTx.begin(), offer->creationTx.end());
+            CalculateOwnerRewards(offer->ownerAddress);
+            res = ICXTransfer(DCT_ID{0}, offer->takerFee, txidAddr, offer->ownerAddress);
+            if (!res)
+                return res;
+        }
+        else if (order->orderType == CICXOrder::TYPE_EXTERNAL) {
             // subtract the balance from txidAddr and return to owner
             CScript txidAddr(offer->creationTx.begin(), offer->creationTx.end());
+            CalculateOwnerRewards(offer->ownerAddress);
             res = ICXTransfer(order->idToken, offer->amount, txidAddr, offer->ownerAddress);
             if (!res)
                 return res;
+            if (!mnview.HasICXSubmitEXTHTLCOpen(offer->creationTx))
+            {
+                res = ICXTransfer(DCT_ID{0}, offer->takerFee, txidAddr, offer->ownerAddress);
+                if (!res)
+                    return res;
+            }
         }
 
         res = mnview.ICXCloseOffer(closeoffer);
