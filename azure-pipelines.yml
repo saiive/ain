@@ -11,7 +11,7 @@ resources:
 
 variables:
   # Container registry service connection established during pipeline creation
-  dockerRegistryServiceConnection: '4813fb62-56ab-4b1f-ae03-01b66e04bf52'
+  dockerRegistryServiceConnection: '3921c1d1-a9db-4a6a-ab5a-d5c1831052af'
   imageRepositoryBase: 'defichain-base'
   imageRepository: 'defichain'
   containerRegistry: 'defiwallet.azurecr.io'
