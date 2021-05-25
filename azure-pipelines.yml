@@ -4,6 +4,7 @@
 
 trigger:
 - master
+- 1.*
 
 resources:
 - repo: self
@@ -20,11 +21,46 @@ variables:
   
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
+  
+  ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/develop') }}:
+    addImageTags: |
+      beta
+  # add docker image tags for builds triggered for tag branch (we assume that we only tag on master)
+  # (used instead of trigger for master branch: see https://tributech.atlassian.net/wiki/spaces/TM/pages/99614725/Branches+Build-Pipelines+Tags#Issue-with-merge%2Fbuild-for-master-branch)
+  ${{ if startsWith(variables['Build.SourceBranch'], 'refs/tags') }}:
+    addImageTags: |
+      beta
+      $(RELEASE_VERSION)
+      
+  ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/master') }}:
+    addImageTags: |
+      beta
+      stable
+      latest
+      $(RELEASE_VERSION)
+      
+  # add docker image tags for builds triggered from release branch
+  ${{ if startsWith(variables['Build.SourceBranch'], 'refs/heads/release') }}:
+    addImageTags: |
+      beta
+      $(RELEASE_VERSION)
 
 stages:
 - stage: Build
   displayName: Build and push stage
   jobs:  
+  - job: BuildAndPublish
+    steps:
+    - checkout: self
+      submodules: true
+      persistCredentials: true
+    - script: |
+        VERSION=$(echo "$(Build.SourceBranch)" | grep -o '[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?')
+        echo "##vso[task.setvariable variable=RELEASE_VERSION;]$VERSION"
+      
+    displayName: 'Parse and set release version'
+    condition: or(startsWith(variables['Build.SourceBranch'], 'refs/heads/release'), startsWith(variables['Build.SourceBranch'], 'refs/tags'), startsWith(variables['Build.SourceBranch'], 'refs/heads/master'))
+    
   - job: Build
     displayName: Build
     pool:
@@ -40,15 +76,30 @@ stages:
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
-          latest
+          alpha
+          ${{ variables.addImageTags }}
+          
     - task: Docker@2
       displayName: Build defid image
       inputs:
-        command: buildAndPush
+        command: build
         repository: $(imageRepository)
         dockerfile: $(dockerfilePath)
         buildContext: $(Build.SourcesDirectory)
+        arguments: --build-arg VERSION=$(tag)
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
-          latest
+          alpha
+          ${{ variables.addImageTags }}
+          
+    - task: Docker@2
+      displayName: Push defid image
+      inputs:
+        command: push
+        repository: $(imageRepository)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+          alpha
+          ${{ variables.addImageTags }}          
