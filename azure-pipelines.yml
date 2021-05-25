@@ -18,7 +18,8 @@ variables:
   dockerfilePathBase: 'contrib/dockerfiles/x86_64-pc-linux-gnu.dockerfile'
   dockerfilePath: 'contrib/dockerfiles/dockerhub/p3_x86_64-pc-linux-gnu.dockerfile'
   tag: '$(Build.BuildId)'
-  
+  RELEASE_VERSION: 'alpha'
+
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
   
