@@ -75,7 +75,7 @@ stages:
         repository: $(imageRepositoryBase)
         dockerfile: $(dockerfilePathBase)
         buildContext: $(Build.SourcesDirectory)
-        arguments: --build-arg VERSION=$(tag) BUILD_VERSION=${BUILD_VERSION} 
+        arguments: --build-arg VERSION=$(tag) --build-arg BUILD_VERSION=$(BUILD_VERSION) 
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
@@ -101,7 +101,7 @@ stages:
         repository: $(imageRepository)
         dockerfile: $(dockerfilePath)
         buildContext: $(Build.SourcesDirectory)
-        arguments: --build-arg VERSION=$(tag) BUILD_VERSION=${BUILD_VERSION} 
+        arguments: --build-arg VERSION=$(tag) --build-arg BUILD_VERSION=$(BUILD_VERSION)
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
