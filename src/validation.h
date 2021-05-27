@@ -35,6 +35,7 @@
 #include <vector>
 
 class CAnchorConfirmMessage;
+struct CBalances;
 class CChainState;
 class CDoubleSignFact;
 class CCustomCSView;
@@ -243,6 +244,8 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
  */
 bool ProcessNewBlockHeaders(const std::vector<CBlockHeader>& block, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex = nullptr, CBlockHeader* first_invalid = nullptr) LOCKS_EXCLUDED(cs_main);
 
+/** Check if transaction is trying to spend a burnt output */
+bool CheckBurnSpend(const CTransaction &tx, const CCoinsViewCache &inputs);
 /** Open a block file (blk?????.dat) */
 FILE* OpenBlockFile(const FlatFilePos &pos, bool fReadOnly = false);
 /** Translation to a filesystem path */
@@ -599,6 +602,9 @@ private:
     //! Manages the UTXO set, which is a reflection of the contents of `m_chain`.
     std::unique_ptr<CoinsViews> m_coins_views;
 
+    //! Indicates disconneting is in process
+    std::atomic_bool m_disconnectTip{false};
+
 public:
     CChainState(BlockManager& blockman) : m_blockman(blockman) {}
     CChainState();
@@ -723,6 +729,9 @@ public:
     /** Check whether we are doing an initial block download (synchronizing from disk or network) */
     bool IsInitialBlockDownload() const;
 
+    /** Check whether we are in disconnect process */
+    bool IsDisconnectingTip() const;
+
     /**
      * Make various assertions about the state of the block index.
      *
@@ -813,5 +822,12 @@ inline bool IsBlockPruned(const CBlockIndex* pblockindex)
 
 Res ApplyGeneralCoinbaseTx(CCustomCSView & mnview, CTransaction const & tx, int height, CAmount nFees, const Consensus::Params& consensus);
 void ReverseGeneralCoinbaseTx(CCustomCSView & mnview, int height);
+
+inline CAmount CalculateCoinbaseReward(const CAmount blockReward, const uint32_t percentage)
+{
+    return (blockReward  * percentage) / 10000;
+}
+
+Res AddNonTxToBurnIndex(const CScript& from, const CBalances& amounts);
 
 #endif // DEFI_VALIDATION_H
