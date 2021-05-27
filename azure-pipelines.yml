@@ -19,6 +19,7 @@ variables:
   dockerfilePath: 'contrib/dockerfiles/dockerhub/p3_x86_64-pc-linux-gnu.dockerfile'
   tag: '$(Build.BuildId)'
   RELEASE_VERSION: 'alpha'
+  BUILD_VERSION: '1.7.2'
 
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
@@ -70,15 +71,28 @@ stages:
     - task: Docker@2
       displayName: Build base image
       inputs:
-        command: buildAndPush
+        command: build
         repository: $(imageRepositoryBase)
         dockerfile: $(dockerfilePathBase)
         buildContext: $(Build.SourcesDirectory)
+        arguments: --build-arg VERSION=$(tag) BUILD_VERSION=${BUILD_VERSION} 
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
           alpha
           ${{ variables.addImageTags }}
+
+    - task: Docker@2
+      displayName: Push base image
+      inputs:
+        command: push
+        repository: $(imageRepositoryBase)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+          alpha
+          ${{ variables.addImageTags }}          
+
           
     - task: Docker@2
       displayName: Build defid image
@@ -87,7 +101,7 @@ stages:
         repository: $(imageRepository)
         dockerfile: $(dockerfilePath)
         buildContext: $(Build.SourcesDirectory)
-        arguments: --build-arg VERSION=$(tag)
+        arguments: --build-arg VERSION=$(tag) BUILD_VERSION=${BUILD_VERSION} 
         containerRegistry: $(dockerRegistryServiceConnection)
         tags: |
           $(tag)
