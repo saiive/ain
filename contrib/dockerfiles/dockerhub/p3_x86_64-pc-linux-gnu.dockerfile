@@ -16,3 +16,4 @@ VOLUME ["/data"]
 
 USER defi:defi
 CMD [ "/app/bin/defid" ]
+ENTRYPOINT [ "/app/bin/defid" ]
