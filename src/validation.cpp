@@ -567,7 +567,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     {
         CCoinsView dummy;
         CCoinsViewCache view(&dummy);
-        CCustomCSView mnview(*pcustomcsview);
+        CCustomCSView mnview(pool.accountsView());
 
         LockPoints lp;
         CCoinsViewCache& coins_cache = ::ChainstateActive().CoinsTip();
@@ -610,15 +610,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
 
         const auto height = GetSpendHeight(view);
 
-        // check for txs in mempool
-        for (const auto& e : mempool.mapTx.get<entry_time>()) {
-            const auto& tx = e.GetTx();
-            auto res = ApplyCustomTx(mnview, view, tx, chainparams.GetConsensus(), height);
-            // we don't need contract anynore furthermore transition to new hardfork will broke it
-            if (height < chainparams.GetConsensus().DakotaHeight) {
-                assert(res.ok || !(res.code & CustomTxErrCodes::Fatal));
-            }
-        }
+        // it does not need to check mempool anymore it has view there
 
         CAmount nFees = 0;
         if (!Consensus::CheckTxInputs(tx, state, view, &mnview, height, nFees, chainparams)) {
@@ -929,6 +921,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
             if (!pool.exists(hash))
                 return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, REJECT_INSUFFICIENTFEE, "mempool full");
         }
+        mnview.Flush();
     }
 
     GetMainSignals().TransactionAddedToMempool(ptx);
@@ -4306,7 +4299,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // Check proof of work
     const Consensus::Params& consensusParams = params.GetConsensus();
-    if (block.nBits != pos::GetNextWorkRequired(pindexPrev, &block, consensusParams))
+    if (block.nBits != pos::GetNextWorkRequired(pindexPrev, block.nTime, consensusParams))
         return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "bad-diffbits", "incorrect proof of work");
 
     // Check against checkpoints
@@ -4321,7 +4314,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
-        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "time-too-old", "block's timestamp is too early");
+        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "time-too-old", strprintf("block's timestamp is too early. Block time: %d Min time: %d", block.GetBlockTime(), pindexPrev->GetMedianTimePast()));
 
     // Check timestamp
     if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME)
@@ -4329,7 +4322,7 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     if (block.height >= static_cast<uint64_t>(consensusParams.DakotaCrescentHeight)) {
         if (block.GetBlockTime() > GetTime() + MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT)
-            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
+            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", strprintf("block timestamp too far in the future. Block time: %d Max time: %d", block.GetBlockTime(), GetTime() + MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT));
     }
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:
