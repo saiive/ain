@@ -1783,7 +1783,9 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
     // Remove burn balance transfers
     if (pindex->nHeight == Params().GetConsensus().EunosHeight)
     {
-        uint32_t lastTxOut;
+        // Make sure to initialize lastTxOut, otherwise it never finds the block and 
+        // ends up looping through uninitialized garbage value.
+        uint32_t lastTxOut = 0;
         auto shouldContinueToNextAccountHistory = [&lastTxOut, block](AccountHistoryKey const & key, CLazySerialize<AccountHistoryValue> valueLazy) -> bool
         {
             if (key.owner != Params().GetConsensus().burnAddress) {
@@ -2627,6 +2629,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         // close expired orders, refund all expired DFC HTLCs at this block height
         if (pindex->nHeight >= chainparams.GetConsensus().EunosHeight)
         {
+            bool isPreEunosPaya = pindex->nHeight < chainparams.GetConsensus().EunosPayaHeight;
+
             cache.ForEachICXOrderExpire([&](CICXOrderView::StatusKey const & key, uint8_t status) {
 
                 if (static_cast<int>(key.first) != pindex->nHeight)
@@ -2671,8 +2675,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 CScript txidAddr(offer->creationTx.begin(),offer->creationTx.end());
                 CTokenAmount takerFee{DCT_ID{0}, offer->takerFee};
 
-                if ((order->orderType == CICXOrder::TYPE_INTERNAL && !cache.HasICXSubmitDFCHTLCOpen(offer->creationTx)) ||
-                    (order->orderType == CICXOrder::TYPE_EXTERNAL && !cache.HasICXSubmitEXTHTLCOpen(offer->creationTx)))
+                if ((order->orderType == CICXOrder::TYPE_INTERNAL && !cache.ExistedICXSubmitDFCHTLC(offer->creationTx, isPreEunosPaya)) ||
+                    (order->orderType == CICXOrder::TYPE_EXTERNAL && !cache.ExistedICXSubmitEXTHTLC(offer->creationTx, isPreEunosPaya)))
                 {
                     auto res = cache.SubBalance(txidAddr,takerFee);
                     if (!res)
@@ -2710,7 +2714,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
                 if (status == CICXSubmitDFCHTLC::STATUS_EXPIRED && order->orderType == CICXOrder::TYPE_INTERNAL)
                 {
-                    if (!cache.HasICXSubmitEXTHTLCOpen(dfchtlc->offerTx))
+                    if (!cache.ExistedICXSubmitEXTHTLC(dfchtlc->offerTx, isPreEunosPaya))
                     {
                         CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                         cache.CalculateOwnerRewards(order->ownerAddress,pindex->nHeight);
@@ -2765,7 +2769,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
                 if (status == CICXSubmitEXTHTLC::STATUS_EXPIRED && order->orderType == CICXOrder::TYPE_EXTERNAL)
                 {
-                    if (!cache.HasICXSubmitDFCHTLCOpen(exthtlc->offerTx))
+                    if (!cache.ExistedICXSubmitDFCHTLC(exthtlc->offerTx, isPreEunosPaya))
                     {
                         CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                         cache.CalculateOwnerRewards(order->ownerAddress,pindex->nHeight);
@@ -2870,32 +2874,34 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     }
     mnview.SetLastHeight(pindex->nHeight);
 
-    if (fCheckpointsEnabled) {
-        auto &checkpoints = chainparams.Checkpoints().mapCheckpoints;
-        auto it = checkpoints.lower_bound(pindex->nHeight);
-        if (it != checkpoints.begin()) {
-            --it;
-            bool pruneStarted = false;
-            auto time = GetTimeMillis();
-            CCustomCSView pruned(mnview);
-            mnview.ForEachUndo([&](UndoKey const & key, CLazySerialize<CUndo>) {
-                if (key.height >= it->first) { // don't erase checkpoint height
-                    return false;
-                }
-                if (!pruneStarted) {
-                    pruneStarted = true;
-                    LogPrintf("Pruning undo data prior %d, it can take a while...\n", it->first);
-                }
-                return pruned.DelUndo(key).ok;
-            });
-            if (pruneStarted) {
-                auto& map = pruned.GetStorage().GetRaw();
-                compactBegin = map.begin()->first;
-                compactEnd = map.rbegin()->first;
-                pruned.Flush();
-                LogPrintf("Pruning undo data finished.\n");
-                LogPrint(BCLog::BENCH, "    - Pruning undo data takes: %dms\n", GetTimeMillis() - time);
+    auto &checkpoints = chainparams.Checkpoints().mapCheckpoints;
+    auto it = checkpoints.lower_bound(pindex->nHeight);
+    if (it != checkpoints.begin()) {
+        --it;
+        bool pruneStarted = false;
+        auto time = GetTimeMillis();
+        CCustomCSView pruned(mnview);
+        mnview.ForEachUndo([&](UndoKey const & key, CLazySerialize<CUndo>) {
+            if (key.height >= it->first) { // don't erase checkpoint height
+                return false;
             }
+            // keep txs in undo, remove undos for block
+            if (fCheckpointsEnabled && !key.txid.IsNull()) {
+                return true;
+            }
+            if (!pruneStarted) {
+                pruneStarted = true;
+                LogPrintf("Pruning undo data prior %d, it can take a while...\n", it->first);
+            }
+            return pruned.DelUndo(key).ok;
+        });
+        if (pruneStarted) {
+            auto& map = pruned.GetStorage().GetRaw();
+            compactBegin = map.begin()->first;
+            compactEnd = map.rbegin()->first;
+            pruned.Flush();
+            LogPrintf("Pruning undo data finished.\n");
+            LogPrint(BCLog::BENCH, "    - Pruning undo data takes: %dms\n", GetTimeMillis() - time);
         }
     }
 
@@ -3812,11 +3818,10 @@ bool CChainState::InvalidateBlock(CValidationState& state, const CChainParams& c
 
     {
         LOCK(cs_main);
-        if (fCheckpointsEnabled) {
-            CBlockIndex* pcheckpoint = GetLastCheckpoint(chainparams.Checkpoints());
-            if (pcheckpoint && pindex->nHeight <= pcheckpoint->nHeight)
-                return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("Cannot invalidate block prior last checkpoint height %d", pcheckpoint->nHeight), REJECT_CHECKPOINT, "");
-        }
+        CBlockIndex* pcheckpoint = GetLastCheckpoint(chainparams.Checkpoints());
+        if (pcheckpoint && pindex->nHeight <= pcheckpoint->nHeight)
+            return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("Cannot invalidate block prior last checkpoint height %d", pcheckpoint->nHeight), REJECT_CHECKPOINT, "");
+
         for (const auto& entry : m_blockman.m_block_index) {
             CBlockIndex *candidate = entry.second;
             // We don't need to put anything in our active chain into the
@@ -4278,20 +4283,23 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
         return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "bad-diffbits", "incorrect proof of work");
 
     // Check against checkpoints
-    if (fCheckpointsEnabled) {
-        // Don't accept any forks from the main chain prior to last checkpoint.
-        // GetLastCheckpoint finds the last checkpoint in MapCheckpoints that's in our
-        // g_blockman.m_block_index.
-        CBlockIndex* pcheckpoint = GetLastCheckpoint(params.Checkpoints());
-        if (pcheckpoint && nHeight <= pcheckpoint->nHeight)
-            return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("%s: forked chain older than last checkpoint (height %d)", __func__, nHeight), REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
-    }
+    // Don't accept any forks from the main chain prior to last checkpoint.
+    // GetLastCheckpoint finds the last checkpoint in MapCheckpoints that's in our
+    // g_blockman.m_block_index.
+    CBlockIndex* pcheckpoint = GetLastCheckpoint(params.Checkpoints());
+    if (pcheckpoint && nHeight <= pcheckpoint->nHeight)
+        return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("%s: forked chain older than last checkpoint (height %d)", __func__, nHeight), REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
         return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "time-too-old", strprintf("block's timestamp is too early. Block time: %d Min time: %d", block.GetBlockTime(), pindexPrev->GetMedianTimePast()));
 
     // Check timestamp
+    if (Params().NetworkIDString() != CBaseChainParams::REGTEST && block.height >= static_cast<uint64_t>(consensusParams.EunosPayaHeight)) {
+        if (block.GetBlockTime() > GetTime() + MAX_FUTURE_BLOCK_TIME_EUNOSPAYA)
+            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", strprintf("block timestamp too far in the future. Block time: %d Max time: %d", block.GetBlockTime(), GetTime() + MAX_FUTURE_BLOCK_TIME_EUNOSPAYA));
+    }
+
     if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME)
         return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
