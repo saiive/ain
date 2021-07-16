@@ -89,6 +89,7 @@ struct Params {
     int EunosHeight;
     int EunosSimsHeight;
     int EunosKampungHeight;
+    int EunosPayaHeight;
     /** Foundation share after AMK, normalized to COIN = 100% */
     CAmount foundationShareDFIP1;
     /** Trackable burn address */
@@ -150,9 +151,9 @@ struct Params {
         CAmount collateralAmount;
         CAmount collateralAmountDakota;
         int activationDelay;
-        int resignDelay; // same delay for criminal ban
+        int resignDelay;
         int newActivationDelay;
-        int newResignDelay; // same delay for criminal ban
+        int newResignDelay;
         int anchoringTeamSize;
         int anchoringFrequency; // create every Nth block
 

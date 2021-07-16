@@ -60,6 +60,7 @@ bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensu
     uint256 masternodeID;
     int64_t creationHeight;
     boost::optional<int64_t> stakerBlockTime;
+    uint16_t timelock;
     {
         // check that block minter exists and active at the height of the block
         AssertLockHeld(cs_main);
@@ -73,17 +74,21 @@ bool ContextualCheckProofOfStake(const CBlockHeader& blockHeader, const Consensu
             return false;
         }
         creationHeight = int64_t(nodePtr->creationHeight);
+        timelock = mnView->GetTimelock(masternodeID, *nodePtr, blockHeader.height);
 
-        stakerBlockTime = mnView->GetMasternodeLastBlockTime(nodePtr->operatorAuthAddress, blockHeader.height);
+        auto usedHeight = blockHeader.height <= params.EunosHeight ? creationHeight : blockHeader.height;
+        stakerBlockTime = mnView->GetMasternodeLastBlockTime(nodePtr->operatorAuthAddress, usedHeight);
         // No record. No stake blocks or post-fork createmastnode TX, use fork time.
         if (!stakerBlockTime) {
-            if (auto block = ::ChainActive()[Params().GetConsensus().DakotaCrescentHeight]) {
-                stakerBlockTime = std::min(blockHeader.GetBlockTime() - block->GetBlockTime(), Params().GetConsensus().pos.nStakeMaxAge);
+            if (auto block = ::ChainActive()[params.DakotaCrescentHeight]) {
+                stakerBlockTime = std::min(blockHeader.GetBlockTime() - block->GetBlockTime(), params.pos.nStakeMaxAge);
             }
         }
     }
+
     // checking PoS kernel is faster, so check it first
-    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, creationHeight, blockHeader.GetBlockTime(), blockHeader.height, masternodeID, params, stakerBlockTime ? *stakerBlockTime : 0)) {
+    if (!CheckKernelHash(blockHeader.stakeModifier, blockHeader.nBits, creationHeight, blockHeader.GetBlockTime(),blockHeader.height,
+                         masternodeID, params, stakerBlockTime ? *stakerBlockTime : 0, timelock)) {
         return false;
     }
 

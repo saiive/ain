@@ -236,7 +236,6 @@ namespace pos {
             initWaiting,
             stakeWaiting,
             stakeReady,
-            criminalWaiting,
             minted,
         };
 
@@ -254,7 +253,7 @@ namespace pos {
 
     private:
         template <typename F>
-        void withSearchInterval(F&& f);
+        void withSearchInterval(F&& f, int64_t height);
     };
 }
 

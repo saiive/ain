@@ -48,8 +48,6 @@ public:
         ENABLED,
         PRE_RESIGNED,
         RESIGNED,
-        PRE_BANNED,
-        BANNED,
         UNKNOWN // unreachable
     };
 
@@ -68,8 +66,8 @@ public:
     int32_t creationHeight;
     //! Resign height
     int32_t resignHeight;
-    //! Criminal ban height
-    int32_t banHeight;
+    //! Was used to set a ban height but is now unused
+    int32_t unusedVariable;
 
     //! This fields are for transaction rollback (by disconnecting block)
     uint256 resignTx;
@@ -98,7 +96,7 @@ public:
 
         READWRITE(creationHeight);
         READWRITE(resignHeight);
-        READWRITE(banHeight);
+        READWRITE(unusedVariable);
 
         READWRITE(resignTx);
         READWRITE(banTx);
@@ -146,16 +144,13 @@ public:
     void IncrementMintedBy(CKeyID const & minter);
     void DecrementMintedBy(CKeyID const & minter);
 
-    bool BanCriminal(const uint256 txid, std::vector<unsigned char> & metadata, int height);
-    bool UnbanCriminal(const uint256 txid, std::vector<unsigned char> & metadata);
-
     boost::optional<std::pair<CKeyID, uint256>> AmIOperator() const;
     boost::optional<std::pair<CKeyID, uint256>> AmIOwner() const;
 
     // Multiple operator support
     std::set<std::pair<CKeyID, uint256>> GetOperatorsMulti() const;
 
-    Res CreateMasternode(uint256 const & nodeId, CMasternode const & node);
+    Res CreateMasternode(uint256 const & nodeId, CMasternode const & node, uint16_t timelock);
     Res ResignMasternode(uint256 const & nodeId, uint256 const & txid, int height);
     Res UnCreateMasternode(uint256 const & nodeId);
     Res UnResignMasternode(uint256 const & nodeId, uint256 const & resignTx);
@@ -166,6 +161,8 @@ public:
 
     void ForEachMinterNode(std::function<bool(MNBlockTimeKey const &, CLazySerialize<int64_t>)> callback, MNBlockTimeKey const & start = {});
 
+    uint16_t GetTimelock(const uint256& nodeId, const CMasternode& node, const uint64_t height) const;
+
     // tags
     struct ID { static const unsigned char prefix; };
     struct Operator { static const unsigned char prefix; };
@@ -173,6 +170,9 @@ public:
 
     // For storing last staked block time
     struct Staker { static const unsigned char prefix; };
+
+    // Store long term time lock
+    struct Timelock { static const unsigned char prefix; };
 };
 
 class CLastHeightView : public virtual CStorageView
