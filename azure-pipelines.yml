@@ -19,7 +19,7 @@ variables:
   dockerfilePath: 'contrib/dockerfiles/dockerhub/p3_x86_64-pc-linux-gnu.dockerfile'
   tag: '$(Build.BuildId)'
   RELEASE_VERSION: 'alpha'
-  BUILD_VERSION: '1.8'
+  BUILD_VERSION: '1.8.2'
 
   # Agent VM image name
   vmImageName: 'ubuntu-latest'
