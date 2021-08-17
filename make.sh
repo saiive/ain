@@ -16,8 +16,9 @@ setup_vars() {
     DOCKERFILES_DIR=${DOCKERFILES_DIR:-"./contrib/dockerfiles"}
     RELEASE_DIR=${RELEASE_DIR:-"./build"}
 
-    EXTRA_BUILD_OPTS=${EXTRA_BUILD_OPTS:-}
+    EXTRA_CONF_ARGS=${EXTRA_CONF_ARGS:-}
     EXTRA_MAKE_ARGS=${EXTRA_MAKE_ARGS:-}
+    EXTRA_MAKE_DEPENDS_ARGS=${EXTRA_MAKE_DEPENDS_ARGS:-}
 
     # shellcheck disable=SC2206
     # This intentionally word-splits the array as env arg can only be strings.
@@ -72,20 +73,22 @@ help() {
 
 # ----------- Direct builds ---------------
 
+
 build() {
     local target=${1:-"x86_64-pc-linux-gnu"}
-    local extra_build_opts=${EXTRA_BUILD_OPTS:-}
-    local extra_make_args=${EXTRA_MAKE_ARGS:-}
+    local extra_conf_opts=${EXTRA_CONF_ARGS:-}
+    local extra_make_args=${EXTRA_MAKE_ARGS:--j $(nproc)}
+    local extra_make_depends_args=${EXTRA_MAKE_DEPENDS_ARGS:--j $(nproc)}
 
     echo "> build: ${target}"
     pushd ./depends >/dev/null
     # XREF: #depends-make
-    make NO_QT=1
+    make NO_QT=1 ${extra_make_depends_args}
     popd >/dev/null
     ./autogen.sh
     # XREF: #make-configure
-    ./configure --prefix="$(pwd)/depends/${target}" ${extra_build_opts}
-    make $extra_make_args
+    ./configure CC=clang-11 CXX=clang++-11 --prefix="$(pwd)/depends/${target}" ${extra_conf_opts}
+    make ${extra_make_args}
 }
 
 deploy() {
@@ -166,7 +169,7 @@ docker_build() {
         echo "> building: ${img}"
         local docker_file="${dockerfiles_dir}/${target}.dockerfile"
         echo "> docker build: ${img}"
-        docker build --build-arg BUILD_VERSION=${IMAGE_VERSION} -f "${docker_file}" -t "${img}" "${docker_context}"
+        docker build -f "${docker_file}" -t "${img}" "${docker_context}"
     done
 }
 
@@ -324,8 +327,11 @@ pkg_install_deps() {
     sudo apt install -y software-properties-common build-essential libtool autotools-dev automake \
         pkg-config bsdmainutils python3 libssl-dev libevent-dev libboost-system-dev \
         libboost-filesystem-dev libboost-chrono-dev libboost-test-dev libboost-thread-dev \
-        libminiupnpc-dev libzmq3-dev libqrencode-dev \
+        libminiupnpc-dev libzmq3-dev libqrencode-dev wget \
         curl cmake
+    wget https://apt.llvm.org/llvm.sh
+    chmod +x llvm.sh
+    sudo ./llvm.sh 11
 }
 
 pkg_ensure_mac_sdk() {

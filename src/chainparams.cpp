@@ -7,7 +7,6 @@
 
 #include <chainparamsseeds.h>
 #include <consensus/merkle.h>
-//#include <masternodes/masternodes.h>
 #include <masternodes/mn_checks.h>
 #include <streams.h>
 #include <tinyformat.h>
@@ -15,11 +14,11 @@
 #include <util/strencodings.h>
 #include <versionbitsinfo.h>
 
-#include <assert.h>
+#include <cassert>
 
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
-
+#include <boost/algorithm/string/case_conv.hpp>
 
 std::vector<CTransactionRef> CChainParams::CreateGenesisMasternodes()
 {
@@ -125,7 +124,8 @@ public:
         consensus.DakotaHeight = 678000; // 1st March 2021
         consensus.DakotaCrescentHeight = 733000; // 25th March 2021
         consensus.EunosHeight = 894000; // 3rd June 2021
-        consensus.EunosSimsHeight = consensus.EunosHeight;
+        consensus.EunosKampungHeight = 895743;
+        consensus.EunosPayaHeight = 1072000; // Aug 05, 2021.
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 //        consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
@@ -304,6 +304,7 @@ public:
                 {757420, uint256S("8d4918be2b2df30175f9e611d9ceb494215b93f2267075ace3f031e784cbccbe")},
                 {850000, uint256S("2d7d58ae18a74f73b9836a8fffd3f65ce409536e654a6c644ce735215238a004")},
                 {875000, uint256S("44d3b3ba8e920cef86b7ec096ab0a2e608d9fedc14a59611a76a5e40aa53145e")},
+                {895741, uint256S("61bc1d73c720990dde43a3fec1f703a222ec5c265e6d491efd60eeec1bdb6dc3")},
             }
         };
 
@@ -340,8 +341,9 @@ public:
         consensus.ClarkeQuayHeight = 155000;
         consensus.DakotaHeight = 220680;
         consensus.DakotaCrescentHeight = 287700;
-        consensus.EunosHeight = 427040; // 21st May 2021
-        consensus.EunosSimsHeight = 435800; // 24th May 2021
+        consensus.EunosHeight = 354950;
+        consensus.EunosKampungHeight = consensus.EunosHeight;
+        consensus.EunosPayaHeight = 463300;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
 //        consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
@@ -482,7 +484,7 @@ public:
                 { 50000, uint256S("74a468206b59bfc2667aba1522471ca2f0a4b7cd807520c47355b040c7735ccc")},
                 {100000, uint256S("9896ac2c34c20771742bccda4f00f458229819947e02204022c8ff26093ac81f")},
                 {150000, uint256S("af9307f438f5c378d1a49cfd3872173a07ed4362d56155e457daffd1061742d4")},
-                {425999, uint256S("89f480d2cd376c1c0d9a9a4fbd117c81552e8e8cc01d44b2ad3295530bba0e68")},
+                {300000, uint256S("205b522772ce34206a08a635c800f99d2fc4e9696ab8c470dad7f5fa51dfea1a")},
             }
         };
 
@@ -519,8 +521,9 @@ public:
         consensus.ClarkeQuayHeight = 0;
         consensus.DakotaHeight = 10;
         consensus.DakotaCrescentHeight = 10;
-        consensus.EunosHeight = 10;
-        consensus.EunosSimsHeight = 10;
+        consensus.EunosHeight = 150;
+        consensus.EunosKampungHeight = consensus.EunosHeight;
+        consensus.EunosPayaHeight = 300;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.pos.nTargetTimespan = 5 * 60; // 5 min == 10 blocks
@@ -643,7 +646,7 @@ public:
         vSeeds.clear();
         // nodes with support for servicebits filtering should be at the top
 //        vSeeds.emplace_back("testnet-seed.defichain.io");
-//        vFixedSeeds = std::vector<SeedSpec6>(pnSeed6_test, pnSeed6_test + ARRAYLEN(pnSeed6_test));
+        vFixedSeeds = std::vector<SeedSpec6>(pnSeed6_devnet, pnSeed6_devnet + ARRAYLEN(pnSeed6_devnet));
 
         fDefaultConsistencyChecks = false;
         fRequireStandard = false;
@@ -671,10 +674,12 @@ class CRegTestParams : public CChainParams {
 public:
     explicit CRegTestParams(const ArgsManager& args) {
         strNetworkID = "regtest";
-        consensus.nSubsidyHalvingInterval = 150;
-        consensus.baseBlockSubsidy = 50 * COIN;
+        bool isJellyfish = false;
+        isJellyfish = gArgs.GetBoolArg("-jellyfish_regtest", false);
+        consensus.nSubsidyHalvingInterval = (isJellyfish) ? 210000 : 150;
+        consensus.baseBlockSubsidy = (isJellyfish) ? 100 * COIN : 50 * COIN;
         consensus.newBaseBlockSubsidy = 40504000000;
-        consensus.emissionReductionPeriod = 150;
+        consensus.emissionReductionPeriod = (isJellyfish) ? 32690 : 150;
         consensus.emissionReductionAmount = 1658; // 1.658%
         consensus.BIP16Exception = uint256();
         consensus.BIP34Height = 500; // BIP34 activated on regtest (Used in functional tests)
@@ -689,7 +694,8 @@ public:
         consensus.DakotaHeight = 10000000;
         consensus.DakotaCrescentHeight = 10000000;
         consensus.EunosHeight = 10000000;
-        consensus.EunosSimsHeight = 10000000;
+        consensus.EunosKampungHeight = 10000000;
+        consensus.EunosPayaHeight = 10000000;
 
         consensus.pos.diffLimit = uint256S("00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
         consensus.pos.nTargetTimespan = 14 * 24 * 60 * 60; // two weeks
@@ -809,15 +815,33 @@ public:
         consensus.burnAddress = GetScriptForDestination(DecodeDestination("mfburnZSAM7Gs1hpDeNaMotJXSGA7edosG", *this));
         consensus.retiredBurnAddress = GetScriptForDestination(DecodeDestination("mfdefichainDSTBurnAddressXXXZcE1vs", *this));
 
-        genesis = CreateGenesisBlock(1579045065, 0x207fffff, 1, {
-                                         CTxOut(consensus.baseBlockSubsidy,
-                                         GetScriptForDestination(DecodeDestination("mud4VMfbBqXNpbt8ur33KHKx8pk3npSq8c", *this)) // 6th masternode owner. for initdist tests
-                                         )},
-                                     CreateGenesisMasternodes()); // old=1296688602
-        consensus.hashGenesisBlock = genesis.GetHash();
+        if (isJellyfish) {
+            std::vector<CTxOut> initdist;
+            // first 2 owner & first 2 operator get 100 mill DFI
+            initdist.push_back(CTxOut(100000000 * COIN, GetScriptForDestination(DecodeDestination("mwsZw8nF7pKxWH8eoKL9tPxTpaFkz7QeLU", *this))));
+            initdist.push_back(CTxOut(100000000 * COIN, GetScriptForDestination(DecodeDestination("mswsMVsyGMj1FzDMbbxw2QW3KvQAv2FKiy", *this))));
+            initdist.push_back(CTxOut(100000000 * COIN, GetScriptForDestination(DecodeDestination("msER9bmJjyEemRpQoS8YYVL21VyZZrSgQ7", *this))));
+            initdist.push_back(CTxOut(100000000 * COIN, GetScriptForDestination(DecodeDestination("mps7BdmwEF2vQ9DREDyNPibqsuSRZ8LuwQ", *this))));
+            initdist.push_back(CTxOut(consensus.baseBlockSubsidy, GetScriptForDestination(DecodeDestination("mud4VMfbBqXNpbt8ur33KHKx8pk3npSq8c", *this))));
 
-        assert(consensus.hashGenesisBlock == uint256S("0x0091f00915b263d08eba2091ba70ba40cea75242b3f51ea29f4a1b8d7814cd01"));
-        assert(genesis.hashMerkleRoot == uint256S("0xc4b6f1f9a7bbb61121b949b57be05e8651e7a0c55c38eb8aaa6c6602b1abc444"));
+            // 6th masternode owner. for initdist tests
+            genesis = CreateGenesisBlock(1579045065, 0x207fffff, 1, initdist,CreateGenesisMasternodes()); // old=1296688602
+            consensus.hashGenesisBlock = genesis.GetHash();
+
+            assert(consensus.hashGenesisBlock == uint256S("0xd744db74fb70ed42767ae028a129365fb4d7de54ba1b6575fb047490554f8a7b"));
+            assert(genesis.hashMerkleRoot == uint256S("0x5615dbbb379da893dd694e02d25a7955e1b7471db55f42bbd82b5d3f5bdb8d38"));
+        }
+        else {
+            genesis = CreateGenesisBlock(1579045065, 0x207fffff, 1, {
+                                          CTxOut(consensus.baseBlockSubsidy,
+                                          GetScriptForDestination(DecodeDestination("mud4VMfbBqXNpbt8ur33KHKx8pk3npSq8c", *this)) // 6th masternode owner. for initdist tests
+                                          )},
+                                      CreateGenesisMasternodes()); // old=1296688602
+            consensus.hashGenesisBlock = genesis.GetHash();
+
+            assert(consensus.hashGenesisBlock == uint256S("0x0091f00915b263d08eba2091ba70ba40cea75242b3f51ea29f4a1b8d7814cd01"));
+            assert(genesis.hashMerkleRoot == uint256S("0xc4b6f1f9a7bbb61121b949b57be05e8651e7a0c55c38eb8aaa6c6602b1abc444"));
+        }
 
         vFixedSeeds.clear(); //!< Regtest mode doesn't have any fixed seeds.
         vSeeds.clear();      //!< Regtest mode doesn't have any DNS seeds.
@@ -850,96 +874,39 @@ public:
     void UpdateActivationParametersFromArgs(const ArgsManager& args);
 };
 
+/// Check for fork height based flag, validate and set the value to a target var
+boost::optional<int> UpdateHeightValidation(const std::string& argName, const std::string& argFlag, int& argTarget) {
+    if (gArgs.IsArgSet(argFlag)) {
+        int64_t height = gArgs.GetArg(argFlag, argTarget);
+        if (height < -1 || height >= std::numeric_limits<int>::max()) {
+            auto lowerArgName = boost::to_lower_copy(argName);
+            throw std::runtime_error(strprintf(
+                "Activation height %ld for %s is out of valid range. Use -1 to disable %s.",
+                height, argName, lowerArgName));
+        } else if (height == -1) {
+            LogPrintf("%s disabled for testing\n", argName);
+            height = std::numeric_limits<int>::max();
+        }
+        argTarget = static_cast<int>(height);
+        return height;
+    }
+    return {};
+}
+
 void CRegTestParams::UpdateActivationParametersFromArgs(const ArgsManager& args)
 {
-    if (gArgs.IsArgSet("-segwitheight")) {
-        int64_t height = gArgs.GetArg("-segwitheight", consensus.SegwitHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for segwit is out of valid range. Use -1 to disable segwit.", height));
-        } else if (height == -1) {
-            LogPrintf("Segwit disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.SegwitHeight = static_cast<int>(height);
+    UpdateHeightValidation("Segwit", "-segwitheight", consensus.SegwitHeight);
+    UpdateHeightValidation("AMK", "-amkheight", consensus.AMKHeight);
+    UpdateHeightValidation("Bayfront", "-bayfrontheight", consensus.BayfrontHeight);
+    UpdateHeightValidation("Bayfront Gardens", "-bayfrontgardensheight", consensus.BayfrontGardensHeight);
+    UpdateHeightValidation("Clarke Quay", "-clarkequayheight", consensus.ClarkeQuayHeight);
+    UpdateHeightValidation("Dakota", "-dakotaheight", consensus.DakotaHeight);
+    UpdateHeightValidation("Dakota Crescent", "-dakotacrescentheight", consensus.DakotaCrescentHeight);
+    auto eunosHeight = UpdateHeightValidation("Eunos", "-eunosheight", consensus.EunosHeight);
+    if (eunosHeight.has_value()){
+        consensus.EunosKampungHeight = static_cast<int>(eunosHeight.get());
     }
-
-    if (gArgs.IsArgSet("-amkheight")) {
-        int64_t height = gArgs.GetArg("-amkheight", consensus.AMKHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for AMK is out of valid range. Use -1 to disable amk features.", height));
-        } else if (height == -1) {
-            LogPrintf("AMK disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.AMKHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-bayfrontheight")) {
-        int64_t height = gArgs.GetArg("-bayfrontheight", consensus.BayfrontHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for Bayfront is out of valid range. Use -1 to disable bayfront features.", height));
-        } else if (height == -1) {
-            LogPrintf("Bayfront disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.BayfrontHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-bayfrontgardensheight")) {
-        int64_t height = gArgs.GetArg("-bayfrontgardensheight", consensus.BayfrontGardensHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for Bayfront is out of valid range. Use -1 to disable bayfront gardens features.", height));
-        } else if (height == -1) {
-            LogPrintf("Bayfront disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.BayfrontGardensHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-clarkequayheight")) {
-        int64_t height = gArgs.GetArg("-clarkequayheight", consensus.ClarkeQuayHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for ClarkeQuay is out of valid range. Use -1 to disable clarkequay features.", height));
-        } else if (height == -1) {
-            LogPrintf("CQ disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.ClarkeQuayHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-dakotaheight")) {
-        int64_t height = gArgs.GetArg("-dakotaheight", consensus.DakotaHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for Dakota is out of valid range. Use -1 to disable dakota features.", height));
-        } else if (height == -1) {
-            LogPrintf("Dakota disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.DakotaHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-dakotacrescentheight")) {
-        int64_t height = gArgs.GetArg("-dakotacrescentheight", consensus.DakotaCrescentHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for DakotaCrescent is out of valid range. Use -1 to disable dakota features.", height));
-        } else if (height == -1) {
-            LogPrintf("DakotaCrescent disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.DakotaCrescentHeight = static_cast<int>(height);
-    }
-
-    if (gArgs.IsArgSet("-eunosheight")) {
-        int64_t height = gArgs.GetArg("-eunosheight", consensus.EunosHeight);
-        if (height < -1 || height >= std::numeric_limits<int>::max()) {
-            throw std::runtime_error(strprintf("Activation height %ld for Eunos is out of valid range. Use -1 to disable Eunos features.", height));
-        } else if (height == -1) {
-            LogPrintf("Eunos disabled for testing\n");
-            height = std::numeric_limits<int>::max();
-        }
-        consensus.EunosHeight = static_cast<int>(height);
-        consensus.EunosSimsHeight = static_cast<int>(height);
-    }
+    UpdateHeightValidation("Eunos Paya", "-eunospayaheight", consensus.EunosPayaHeight);
 
     if (!args.IsArgSet("-vbparams")) return;
 

@@ -4,7 +4,6 @@
 
 #include <masternodes/masternodes.h>
 #include <masternodes/anchors.h>
-#include <masternodes/criminals.h>
 #include <masternodes/mn_checks.h>
 
 #include <chainparams.h>
@@ -22,11 +21,13 @@
 #include <unordered_map>
 
 /// @attention make sure that it does not overlap with those in tokens.cpp !!!
-// Prefixes for the 'custom chainstate database' (customsc/)
+// Prefixes for the 'custom chainstate database' (enhancedcs/)
 const unsigned char DB_MASTERNODES = 'M';     // main masternodes table
 const unsigned char DB_MN_OPERATORS = 'o';    // masternodes' operators index
 const unsigned char DB_MN_OWNERS = 'w';       // masternodes' owners index
 const unsigned char DB_MN_STAKER = 'X';       // masternodes' last staked block time
+const unsigned char DB_MN_SUBNODE = 'Z';      // subnode's last staked block time
+const unsigned char DB_MN_TIMELOCK = 'K';
 const unsigned char DB_MN_HEIGHT = 'H';       // single record with last processed chain height
 const unsigned char DB_MN_VERSION = 'D';
 const unsigned char DB_MN_ANCHOR_REWARD = 'r';
@@ -40,6 +41,8 @@ const unsigned char CMasternodesView::ID      ::prefix = DB_MASTERNODES;
 const unsigned char CMasternodesView::Operator::prefix = DB_MN_OPERATORS;
 const unsigned char CMasternodesView::Owner   ::prefix = DB_MN_OWNERS;
 const unsigned char CMasternodesView::Staker  ::prefix = DB_MN_STAKER;
+const unsigned char CMasternodesView::SubNode ::prefix = DB_MN_SUBNODE;
+const unsigned char CMasternodesView::Timelock::prefix = DB_MN_TIMELOCK;
 const unsigned char CAnchorRewardsView::BtcTx ::prefix = DB_MN_ANCHOR_REWARD;
 const unsigned char CAnchorConfirmsView::BtcTx::prefix = DB_MN_ANCHOR_CONFIRM;
 const unsigned char CTeamView::AuthTeam       ::prefix = DB_MN_AUTH_TEAM;
@@ -50,7 +53,7 @@ std::unique_ptr<CStorageLevelDB> pcustomcsDB;
 
 int GetMnActivationDelay(int height)
 {
-    if (height < Params().GetConsensus().EunosSimsHeight) {
+    if (height < Params().GetConsensus().EunosHeight) {
         return Params().GetConsensus().mn.activationDelay;
     }
 
@@ -59,7 +62,7 @@ int GetMnActivationDelay(int height)
 
 int GetMnResignDelay(int height)
 {
-    if (height < Params().GetConsensus().EunosSimsHeight) {
+    if (height < Params().GetConsensus().EunosHeight) {
         return Params().GetConsensus().mn.resignDelay;
     }
 
@@ -99,7 +102,7 @@ CMasternode::CMasternode()
     , operatorType(0)
     , creationHeight(0)
     , resignHeight(-1)
-    , banHeight(-1)
+    , unusedVariable(-1)
     , resignTx()
     , banTx()
 {
@@ -112,26 +115,23 @@ CMasternode::State CMasternode::GetState() const
 
 CMasternode::State CMasternode::GetState(int height) const
 {
-    assert (banHeight == -1 || resignHeight == -1); // mutually exclusive!: ban XOR resign
+    int EunosPayaHeight = Params().GetConsensus().EunosPayaHeight;
 
-    if (resignHeight == -1 && banHeight == -1) { // enabled or pre-enabled
+    if (resignHeight == -1) { // enabled or pre-enabled
         // Special case for genesis block
-        if (creationHeight == 0 || height >= creationHeight + GetMnActivationDelay(height)) {
-            return State::ENABLED;
+        int activationDelay = height < EunosPayaHeight ? GetMnActivationDelay(height) : GetMnActivationDelay(creationHeight);
+        if (creationHeight == 0 || height >= creationHeight + activationDelay) {
+                return State::ENABLED;
         }
         return State::PRE_ENABLED;
     }
+
     if (resignHeight != -1) { // pre-resigned or resigned
-        if (height < resignHeight + GetMnResignDelay(height)) {
-            return State::PRE_RESIGNED;
+        int resignDelay = height < EunosPayaHeight ? GetMnResignDelay(height) : GetMnResignDelay(resignHeight);
+        if (height < resignHeight + resignDelay) {
+                return State::PRE_RESIGNED;
         }
         return State::RESIGNED;
-    }
-    if (banHeight != -1) { // pre-banned or banned
-        if (height < banHeight + GetMnResignDelay(height)) {
-            return State::PRE_BANNED;
-        }
-        return State::BANNED;
     }
     return State::UNKNOWN;
 }
@@ -144,7 +144,10 @@ bool CMasternode::IsActive() const
 bool CMasternode::IsActive(int height) const
 {
     State state = GetState(height);
-    return state == ENABLED || state == PRE_RESIGNED || state == PRE_BANNED;
+    if (height >= Params().GetConsensus().EunosPayaHeight) {
+        return state == ENABLED;
+    }
+    return state == ENABLED || state == PRE_RESIGNED;
 }
 
 std::string CMasternode::GetHumanReadableState(State state)
@@ -158,10 +161,6 @@ std::string CMasternode::GetHumanReadableState(State state)
             return "PRE_RESIGNED";
         case RESIGNED:
             return "RESIGNED";
-        case PRE_BANNED:
-            return "PRE_BANNED";
-        case BANNED:
-            return "BANNED";
         default:
             return "UNKNOWN";
     }
@@ -176,25 +175,13 @@ bool operator==(CMasternode const & a, CMasternode const & b)
             a.operatorAuthAddress == b.operatorAuthAddress &&
             a.creationHeight == b.creationHeight &&
             a.resignHeight == b.resignHeight &&
-            a.banHeight == b.banHeight &&
+            a.unusedVariable == b.unusedVariable &&
             a.resignTx == b.resignTx &&
             a.banTx == b.banTx
             );
 }
 
 bool operator!=(CMasternode const & a, CMasternode const & b)
-{
-    return !(a == b);
-}
-
-bool operator==(CDoubleSignFact const & a, CDoubleSignFact const & b)
-{
-    return (a.blockHeader.GetHash() == b.blockHeader.GetHash() &&
-            a.conflictBlockHeader.GetHash() == b.conflictBlockHeader.GetHash()
-    );
-}
-
-bool operator!=(CDoubleSignFact const & a, CDoubleSignFact const & b)
 {
     return !(a == b);
 }
@@ -252,48 +239,6 @@ void CMasternodesView::DecrementMintedBy(const CKeyID & minter)
     assert(node);
     --node->mintedBlocks;
     WriteBy<ID>(*nodeId, *node);
-
-    // Erase from cache
-    minterTimeCache.erase(minter);
-}
-
-bool CMasternodesView::BanCriminal(const uint256 txid, std::vector<unsigned char> & metadata, int height)
-{
-    std::pair<CBlockHeader, CBlockHeader> criminal;
-    uint256 nodeId;
-    CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
-    ss >> criminal.first >> criminal.second >> nodeId; // mnid is totally unnecessary!
-
-    CKeyID minter;
-    if (IsDoubleSigned(criminal.first, criminal.second, minter)) {
-        auto node = GetMasternode(nodeId);
-        if (node && node->operatorAuthAddress == minter && node->banTx.IsNull()) {
-            node->banTx = txid;
-            node->banHeight = height;
-            WriteBy<ID>(nodeId, *node);
-
-            return true;
-        }
-    }
-    return false;
-}
-
-bool CMasternodesView::UnbanCriminal(const uint256 txid, std::vector<unsigned char> & metadata)
-{
-    std::pair<CBlockHeader, CBlockHeader> criminal;
-    uint256 nodeId;
-    CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
-    ss >> criminal.first >> criminal.second >> nodeId; // mnid is totally unnecessary!
-
-    // there is no need to check doublesigning or smth, we just rolling back previously approved (or ignored) banTx!
-    auto node = GetMasternode(nodeId);
-    if (node && node->banTx == txid) {
-        node->banTx = {};
-        node->banHeight = -1;
-        WriteBy<ID>(nodeId, *node);
-        return true;
-    }
-    return false;
 }
 
 boost::optional<std::pair<CKeyID, uint256> > CMasternodesView::AmIOperator() const
@@ -342,7 +287,7 @@ boost::optional<std::pair<CKeyID, uint256> > CMasternodesView::AmIOwner() const
     return {};
 }
 
-Res CMasternodesView::CreateMasternode(const uint256 & nodeId, const CMasternode & node)
+Res CMasternodesView::CreateMasternode(const uint256 & nodeId, const CMasternode & node, uint16_t timelock)
 {
     // Check auth addresses and that there in no MN with such owner or operator
     if ((node.operatorType != 1 && node.operatorType != 4) || (node.ownerType != 1 && node.ownerType != 4) ||
@@ -358,6 +303,10 @@ Res CMasternodesView::CreateMasternode(const uint256 & nodeId, const CMasternode
     WriteBy<Owner>(node.ownerAuthAddress, nodeId);
     WriteBy<Operator>(node.operatorAuthAddress, nodeId);
 
+    if (timelock > 0) {
+        WriteBy<Timelock>(nodeId, timelock);
+    }
+
     return Res::Ok();
 }
 
@@ -369,8 +318,17 @@ Res CMasternodesView::ResignMasternode(const uint256 & nodeId, const uint256 & t
         return Res::Err("node %s does not exists", nodeId.ToString());
     }
     auto state = node->GetState(height);
-    if ((state != CMasternode::PRE_ENABLED && state != CMasternode::ENABLED) /*|| IsAnchorInvolved(nodeId, height)*/) { // if already spoiled by resign or ban, or need for anchor
+    if (height >= Params().GetConsensus().EunosPayaHeight) {
+        if (state != CMasternode::ENABLED) {
+            return Res::Err("node %s state is not 'ENABLED'", nodeId.ToString());
+        }
+    } else if ((state != CMasternode::PRE_ENABLED && state != CMasternode::ENABLED)) {
         return Res::Err("node %s state is not 'PRE_ENABLED' or 'ENABLED'", nodeId.ToString());
+    }
+
+    const auto timelock = GetTimelock(nodeId, *node, height);
+    if (timelock) {
+        return Res::Err("Trying to resign masternode before timelock expiration.");
     }
 
     node->resignTx =  txid;
@@ -385,18 +343,11 @@ void CMasternodesView::SetMasternodeLastBlockTime(const CKeyID & minter, const u
     auto nodeId = GetMasternodeIdByOperator(minter);
     assert(nodeId);
 
-    minterTimeCache[minter] = {blockHeight, time};
     WriteBy<Staker>(MNBlockTimeKey{*nodeId, blockHeight}, time);
 }
 
 boost::optional<int64_t> CMasternodesView::GetMasternodeLastBlockTime(const CKeyID & minter, const uint32_t height)
 {
-    // Only return from cache if less than requested height to avoid chain split
-    const auto it = minterTimeCache.find(minter);
-    if (it != minterTimeCache.end() && it->second.first < height) {
-        return it->second.second;
-    }
-
     auto nodeId = GetMasternodeIdByOperator(minter);
     assert(nodeId);
 
@@ -407,11 +358,6 @@ boost::optional<int64_t> CMasternodesView::GetMasternodeLastBlockTime(const CKey
         if (key.masternodeID == nodeId)
         {
             time = blockTime;
-
-            // Add entry to cache if it was not found.
-            if (it == minterTimeCache.end()) {
-                minterTimeCache[minter] = {key.blockHeight, time};
-            }
         }
 
         // Get first result only and exit
@@ -434,6 +380,49 @@ void CMasternodesView::EraseMasternodeLastBlockTime(const uint256& nodeId, const
 void CMasternodesView::ForEachMinterNode(std::function<bool(MNBlockTimeKey const &, CLazySerialize<int64_t>)> callback, MNBlockTimeKey const & start)
 {
     ForEach<Staker, MNBlockTimeKey, int64_t>(callback, start);
+}
+
+void CMasternodesView::SetSubNodesBlockTime(const CKeyID & minter, const uint32_t &blockHeight, const uint8_t id, const int64_t& time)
+{
+    auto nodeId = GetMasternodeIdByOperator(minter);
+    assert(nodeId);
+
+    WriteBy<SubNode>(SubNodeBlockTimeKey{*nodeId, id, blockHeight}, time);
+}
+
+std::vector<int64_t> CMasternodesView::GetSubNodesBlockTime(const CKeyID & minter, const uint32_t height)
+{
+    auto nodeId = GetMasternodeIdByOperator(minter);
+    assert(nodeId);
+
+    std::vector<int64_t> times(SUBNODE_COUNT, 0);
+
+    for (uint8_t i{0}; i < SUBNODE_COUNT; ++i) {
+        ForEachSubNode([&](const SubNodeBlockTimeKey &key, int64_t blockTime)
+        {
+            if (key.masternodeID == nodeId)
+            {
+                times[i] = blockTime;
+            }
+
+            // Get first result only and exit
+            return false;
+        }, SubNodeBlockTimeKey{*nodeId, i, height - 1});
+    }
+
+    return times;
+}
+
+void CMasternodesView::ForEachSubNode(std::function<bool(SubNodeBlockTimeKey const &, CLazySerialize<int64_t>)> callback, SubNodeBlockTimeKey const & start)
+{
+    ForEach<SubNode, SubNodeBlockTimeKey, int64_t>(callback, start);
+}
+
+void CMasternodesView::EraseSubNodesLastBlockTime(const uint256& nodeId, const uint32_t& blockHeight)
+{
+    for (uint8_t i{0}; i < SUBNODE_COUNT; ++i) {
+        EraseBy<SubNode>(SubNodeBlockTimeKey{nodeId, i, blockHeight});
+    }
 }
 
 Res CMasternodesView::UnCreateMasternode(const uint256 & nodeId)
@@ -460,18 +449,69 @@ Res CMasternodesView::UnResignMasternode(const uint256 & nodeId, const uint256 &
     return Res::Err("No such masternode %s, resignTx: %s", nodeId.GetHex(), resignTx.GetHex());
 }
 
-size_t CMasternodesView::LoadMinterCache() {
-    ForEachMasternode([&](uint256 const& nodeId, CMasternode node)
-    {
-        // Load last block times into cache
-        if (node.IsActive()) {
-            GetMasternodeLastBlockTime(node.operatorAuthAddress, std::numeric_limits<uint32_t>::max());
+uint16_t CMasternodesView::GetTimelock(const uint256& nodeId, const CMasternode& node, const uint64_t height) const
+{
+    auto timelock = ReadBy<Timelock, uint16_t>(nodeId);
+    if (timelock) {
+        LOCK(cs_main);
+        // Get last height
+        auto lastHeight = height - 1;
+
+        // Cannot expire below block count required to calculate average time
+        if (lastHeight < Params().GetConsensus().mn.newResignDelay) {
+            return *timelock;
         }
 
-        return true;
-    }, {});
+        // Get timelock expiration time. Timelock set in weeks, convert to seconds.
+        const auto timelockExpire = ::ChainActive()[node.creationHeight]->nTime + (*timelock * 7 * 24 * 60 * 60);
 
-    return minterTimeCache.size();
+        // Get average time of the last two times the activation delay worth of blocks
+        uint64_t totalTime{0};
+        for (; lastHeight + Params().GetConsensus().mn.newResignDelay >= height; --lastHeight) {
+            totalTime += ::ChainActive()[lastHeight]->nTime;
+        }
+        const uint32_t averageTime = totalTime / Params().GetConsensus().mn.newResignDelay;
+
+        // Below expiration return timelock
+        if (averageTime < timelockExpire) {
+            return *timelock;
+        } else { // Expired. Return null.
+            return 0;
+        }
+    }
+    return 0;
+}
+
+std::vector<int64_t> CMasternodesView::GetBlockTimes(const CKeyID& keyID, const uint32_t blockHeight, const int32_t creationHeight, const uint16_t timelock)
+{
+    // Get last block time for non-subnode staking
+    boost::optional<int64_t> stakerBlockTime = GetMasternodeLastBlockTime(keyID, blockHeight);
+
+    // Get times for sub nodes, defaults to {0, 0, 0, 0} for MNs created before EunosPayaHeight
+    std::vector<int64_t> subNodesBlockTime = GetSubNodesBlockTime(keyID, blockHeight);
+
+    // Set first entry to previous accrued multiplier.
+    if (stakerBlockTime && !subNodesBlockTime[0]) {
+        subNodesBlockTime[0] = *stakerBlockTime;
+    }
+
+    if (auto block = ::ChainActive()[Params().GetConsensus().EunosPayaHeight]) {
+        if (creationHeight < Params().GetConsensus().DakotaCrescentHeight && !stakerBlockTime && !subNodesBlockTime[0]) {
+            if (auto dakotaBlock = ::ChainActive()[Params().GetConsensus().DakotaCrescentHeight]) {
+                subNodesBlockTime[0] = dakotaBlock->GetBlockTime();
+            }
+        }
+
+        // If no values set for pre-fork MN use the fork time
+        const uint8_t loops = timelock == CMasternode::TENYEAR ? 4 : timelock == CMasternode::FIVEYEAR ? 3 : 2;
+        for (uint8_t i{0}; i < loops; ++i) {
+            if (!subNodesBlockTime[i]) {
+                subNodesBlockTime[i] = block->GetBlockTime();
+            }
+        }
+    }
+
+    return subNodesBlockTime;
 }
 
 /*
@@ -668,16 +708,13 @@ enum AnchorTeams {
 void CCustomCSView::CalcAnchoringTeams(const uint256 & stakeModifier, const CBlockIndex *pindexNew)
 {
     std::set<uint256> masternodeIDs;
-    int blockSample{7 * 2880}; // One week
-    const CBlockIndex* pindex = pindexNew;
+    const int blockSample = 7 * Params().GetConsensus().blocksPerDay(); // One week
 
-    // Get active MNs from last week's worth of blocks
-    for (int i{0}; pindex && i < blockSample; pindex = pindex->pprev, ++i) {
-        CKeyID minter;
-        if (pindex->GetBlockHeader().ExtractMinterKey(minter)) {
-            LOCK(cs_main);
-            auto id = GetMasternodeIdByOperator(minter);
-            if (id) {
+    {
+        LOCK(cs_main);
+        const CBlockIndex* pindex = pindexNew;
+        for (int i{0}; pindex && i < blockSample; pindex = pindex->pprev, ++i) {
+            if (auto id = GetMasternodeIdByOperator(pindex->minterKey())) {
                 masternodeIDs.insert(*id);
             }
         }
@@ -764,7 +801,7 @@ bool CCustomCSView::CanSpend(const uint256 & txId, int height) const
     // check if it was mn collateral and mn was resigned or banned
     if (node) {
         auto state = node->GetState(height);
-        return state == CMasternode::RESIGNED || state == CMasternode::BANNED;
+        return state == CMasternode::RESIGNED;
     }
     // check if it was token collateral and token already destroyed
     /// @todo token check for total supply/limit when implemented

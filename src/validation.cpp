@@ -20,7 +20,6 @@
 #include <index/txindex.h>
 #include <masternodes/accountshistory.h>
 #include <masternodes/anchors.h>
-#include <masternodes/criminals.h>
 #include <masternodes/govvariables/lp_daily_dfi_reward.h>
 #include <masternodes/masternodes.h>
 #include <masternodes/mn_checks.h>
@@ -136,7 +135,6 @@ size_t nCoinCacheUsage = 5000 * 300;
 size_t nCustomMemUsage = nDefaultDbCache << 10;
 uint64_t nPruneTarget = 0;
 bool fIsFakeNet = false;
-bool fCriminals = false;
 int64_t nMaxTipAge = DEFAULT_MAX_TIP_AGE;
 
 uint256 hashAssumeValid;
@@ -149,6 +147,10 @@ CTxMemPool mempool(&feeEstimator);
 
 /** Constant stuff for coinbase transactions we create: */
 CScript COINBASE_FLAGS;
+
+// used for db compacting
+TBytes compactBegin;
+TBytes compactEnd;
 
 // Internal stuff
 namespace {
@@ -567,7 +569,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
     {
         CCoinsView dummy;
         CCoinsViewCache view(&dummy);
-        CCustomCSView mnview(*pcustomcsview);
+        CCustomCSView mnview(pool.accountsView());
 
         LockPoints lp;
         CCoinsViewCache& coins_cache = ::ChainstateActive().CoinsTip();
@@ -610,15 +612,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
 
         const auto height = GetSpendHeight(view);
 
-        // check for txs in mempool
-        for (const auto& e : mempool.mapTx.get<entry_time>()) {
-            const auto& tx = e.GetTx();
-            auto res = ApplyCustomTx(mnview, view, tx, chainparams.GetConsensus(), height);
-            // we don't need contract anynore furthermore transition to new hardfork will broke it
-            if (height < chainparams.GetConsensus().DakotaHeight) {
-                assert(res.ok || !(res.code & CustomTxErrCodes::Fatal));
-            }
-        }
+        // it does not need to check mempool anymore it has view there
 
         CAmount nFees = 0;
         if (!Consensus::CheckTxInputs(tx, state, view, &mnview, height, nFees, chainparams)) {
@@ -929,6 +923,7 @@ static bool AcceptToMemoryPoolWorker(const CChainParams& chainparams, CTxMemPool
             if (!pool.exists(hash))
                 return state.Invalid(ValidationInvalidReason::TX_MEMPOOL_POLICY, false, REJECT_INSUFFICIENTFEE, "mempool full");
         }
+        mnview.Flush();
     }
 
     GetMainSignals().TransactionAddedToMempool(ptx);
@@ -1651,7 +1646,7 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When FAILED is returned, view is left in an indeterminate state. */
-DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, CCustomCSView& mnview, std::vector<CAnchorConfirmMessage> & disconnectedAnchorConfirms, std::map<uint256, CDoubleSignFact> & disconnectedCriminals)
+DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view, CCustomCSView& mnview, std::vector<CAnchorConfirmMessage> & disconnectedAnchorConfirms)
 {
     bool fClean = true;
 
@@ -1739,18 +1734,6 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
                 LogPrint(BCLog::ANCHORING, "%s: disconnected finalization tx: %s block: %d\n", __func__, tx.GetHash().GetHex(), block.height);
             }
-            else if (IsCriminalProofTx(tx, metadata))
-            {
-                if (mnview.UnbanCriminal(tx.GetHash(), metadata)) {
-                    /// @todo criminals: refactor
-                    std::pair<CBlockHeader, CBlockHeader> criminal;
-                    uint256 mnid;
-                    CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
-                    ss >> criminal.first >> criminal.second >> mnid; // mnid is totally unnecessary!
-
-                    disconnectedCriminals.emplace(mnid, CDoubleSignFact{criminal.first, criminal.second} );
-                }
-            }
         }
 
         // Check that all outputs are available and match the outputs in the block itself
@@ -1774,7 +1757,7 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
         // restore inputs
         TBytes dummy;
-        if (i > 0 && !IsAnchorRewardTx(tx, dummy) && !IsCriminalProofTx(tx, dummy) && !IsAnchorRewardTxPlus(tx, dummy)) { // not coinbases
+        if (i > 0 && !IsAnchorRewardTx(tx, dummy) && !IsAnchorRewardTxPlus(tx, dummy)) { // not coinbases
             CTxUndo &txundo = blockUndo.vtxundo[i-1];
             if (txundo.vprevout.size() != tx.vin.size()) {
                 error("DisconnectBlock(): transaction and undo data inconsistent");
@@ -1800,7 +1783,9 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
     // Remove burn balance transfers
     if (pindex->nHeight == Params().GetConsensus().EunosHeight)
     {
-        uint32_t lastTxOut;
+        // Make sure to initialize lastTxOut, otherwise it never finds the block and 
+        // ends up looping through uninitialized garbage value.
+        uint32_t lastTxOut = 0;
         auto shouldContinueToNextAccountHistory = [&lastTxOut, block](AccountHistoryKey const & key, CLazySerialize<AccountHistoryValue> valueLazy) -> bool
         {
             if (key.owner != Params().GetConsensus().burnAddress) {
@@ -1835,7 +1820,11 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
     if (!fIsFakeNet) {
         mnview.DecrementMintedBy(minterKey);
-        mnview.EraseMasternodeLastBlockTime(*nodeId, static_cast<uint32_t>(pindex->nHeight));
+        if (pindex->nHeight >= Params().GetConsensus().EunosPayaHeight) {
+            mnview.EraseSubNodesLastBlockTime(*nodeId, static_cast<uint32_t>(pindex->nHeight));
+        } else {
+            mnview.EraseMasternodeLastBlockTime(*nodeId, static_cast<uint32_t>(pindex->nHeight));
+        }
     }
     mnview.SetLastHeight(pindex->pprev->nHeight);
 
@@ -2149,7 +2138,7 @@ Res AddNonTxToBurnIndex(const CScript& from, const CBalances& amounts)
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
 bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBlockIndex* pindex,
-                  CCoinsViewCache& view, CCustomCSView& mnview, const CChainParams& chainparams, std::vector<uint256> & rewardedAnchors, std::vector<uint256> & bannedCriminals, bool fJustCheck)
+                  CCoinsViewCache& view, CCustomCSView& mnview, const CChainParams& chainparams, std::vector<uint256> & rewardedAnchors, bool fJustCheck)
 {
     AssertLockHeld(cs_main);
     assert(pindex);
@@ -2175,13 +2164,19 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     // is enforced in ContextualCheckBlockHeader(); we wouldn't want to
     // re-enforce that rule here (at least until we make it impossible for
     // GetAdjustedTime() to go backward).
-    if (!CheckBlock(block, state, chainparams.GetConsensus(), !fJustCheck, !fJustCheck)) {
+
+    CheckContextState ctxState;
+
+    if (!CheckBlock(block, state, chainparams.GetConsensus(), ctxState, !fJustCheck, !fJustCheck)) {
         if (state.GetReason() == ValidationInvalidReason::BLOCK_MUTATED) {
             // We don't write down blocks to disk if they may have been
             // corrupted, so this should be impossible unless we're having hardware
             // problems.
             return AbortNode(state, "Corrupt block found indicating potential hardware failure; shutting down");
         }
+
+        // Add sleep here to avoid hot looping over failed but not invalidated block.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         return error("%s: Consensus::CheckBlock: %s", __func__, FormatStateMessage(state));
     }
 
@@ -2218,7 +2213,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
     // We are forced not to check this due to the block wasn't signed yet if called by TestBlockValidity()
     if (!fJustCheck && !fIsFakeNet) {
-        // Check only that mintedBlocks counter is correct (MN existence and activation was partially checked before in CheckBlock()->ContextualCheckProofOfStake(), but not in the case of fJustCheck)
+        // Check only that mintedBlocks counter is correct (MN existence and activation was partially checked before in checkblock()->contextualcheckproofofstake(), but not in the case of fJustCheck)
         minterKey = pindex->minterKey();
         auto nodeId = mnview.GetMasternodeIdByOperator(minterKey);
         assert(nodeId);
@@ -2482,24 +2477,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             control.Add(vChecks);
         } else {
             std::vector<unsigned char> metadata;
-            if (IsCriminalProofTx(tx, metadata)) {
-                if (tx.GetValueOut() > 0) {
-                    return state.Invalid(ValidationInvalidReason::CONSENSUS,
-                                         error("ConnectBlock(): criminal detection pays too much (actual=%d)",
-                                               tx.GetValueOut()),
-                                         REJECT_INVALID, "bad-cr-amount");
-                }
-                if (mnview.BanCriminal(tx.GetHash(), metadata, block.height)) {
-                    // already checked if we are here
-                    /// @todo criminals: refactor
-                    std::pair<CBlockHeader, CBlockHeader> criminal;
-                    uint256 mnid;
-                    CDataStream ss(metadata, SER_NETWORK, PROTOCOL_VERSION);
-                    ss >> criminal.first >> criminal.second >> mnid;
-
-                    bannedCriminals.push_back(mnid);
-                }
-            } else if (IsAnchorRewardTxPlus(tx, metadata)) {
+            if (IsAnchorRewardTxPlus(tx, metadata)) {
                 if (!fJustCheck) {
                     LogPrint(BCLog::ANCHORING, "%s: connecting finalization tx: %s block: %d\n", __func__, tx.GetHash().GetHex(), block.height);
                 }
@@ -2567,7 +2545,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         return accountsView.Flush(); // keeps compatibility
 
     // validates account changes as well
-    if (pindex->nHeight >= chainparams.GetConsensus().EunosHeight) {
+    if (pindex->nHeight >= chainparams.GetConsensus().EunosHeight
+    && pindex->nHeight < chainparams.GetConsensus().EunosKampungHeight) {
         bool mutated;
         uint256 hashMerkleRoot2 = BlockMerkleRoot(block, &mutated);
         if (block.hashMerkleRoot != Hash2(hashMerkleRoot2, accountsView.MerkleRoot())) {
@@ -2607,6 +2586,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
             if (incentivePair != chainparams.GetConsensus().newNonUTXOSubsidies.end())
             {
                 CAmount subsidy = CalculateCoinbaseReward(GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus()), incentivePair->second);
+                subsidy *= chainparams.GetConsensus().blocksPerDay();
                 // Change daily LP reward if it has changed
                 auto var = cache.GetVariable(LP_DAILY_DFI_REWARD::TypeName());
                 if (var) {
@@ -2656,6 +2636,8 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         // close expired orders, refund all expired DFC HTLCs at this block height
         if (pindex->nHeight >= chainparams.GetConsensus().EunosHeight)
         {
+            bool isPreEunosPaya = pindex->nHeight < chainparams.GetConsensus().EunosPayaHeight;
+
             cache.ForEachICXOrderExpire([&](CICXOrderView::StatusKey const & key, uint8_t status) {
 
                 if (static_cast<int>(key.first) != pindex->nHeight)
@@ -2671,7 +2653,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                     CScript txidaddr(order->creationTx.begin(), order->creationTx.end());
                     auto res = cache.SubBalance(txidaddr, amount);
                     if (!res)
-                        LogPrintf("Can't subtract balance from order txidaddr: %s\n", res.msg);
+                        LogPrintf("Can't subtract balance from order (%s) txidaddr: %s\n", order->creationTx.GetHex(), res.msg);
                     else
                     {
                         cache.CalculateOwnerRewards(order->ownerAddress,pindex->nHeight);
@@ -2700,12 +2682,12 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                 CScript txidAddr(offer->creationTx.begin(),offer->creationTx.end());
                 CTokenAmount takerFee{DCT_ID{0}, offer->takerFee};
 
-                if ((order->orderType == CICXOrder::TYPE_INTERNAL && !cache.HasICXSubmitDFCHTLCOpen(offer->creationTx)) ||
-                    (order->orderType == CICXOrder::TYPE_EXTERNAL && !cache.HasICXSubmitEXTHTLCOpen(offer->creationTx)))
+                if ((order->orderType == CICXOrder::TYPE_INTERNAL && !cache.ExistedICXSubmitDFCHTLC(offer->creationTx, isPreEunosPaya)) ||
+                    (order->orderType == CICXOrder::TYPE_EXTERNAL && !cache.ExistedICXSubmitEXTHTLC(offer->creationTx, isPreEunosPaya)))
                 {
                     auto res = cache.SubBalance(txidAddr,takerFee);
                     if (!res)
-                        LogPrintf("Can't subtract takerFee from offer txidAddr: %s\n", res.msg);
+                        LogPrintf("Can't subtract takerFee from offer (%s) txidAddr: %s\n", offer->creationTx.GetHex(), res.msg);
                     else
                     {
                         cache.CalculateOwnerRewards(offer->ownerAddress,pindex->nHeight);
@@ -2739,7 +2721,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
                 if (status == CICXSubmitDFCHTLC::STATUS_EXPIRED && order->orderType == CICXOrder::TYPE_INTERNAL)
                 {
-                    if (!cache.HasICXSubmitEXTHTLCOpen(dfchtlc->offerTx))
+                    if (!cache.ExistedICXSubmitEXTHTLC(dfchtlc->offerTx, isPreEunosPaya))
                     {
                         CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                         cache.CalculateOwnerRewards(order->ownerAddress,pindex->nHeight);
@@ -2762,7 +2744,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
                     CScript txidaddr = CScript(dfchtlc->creationTx.begin(), dfchtlc->creationTx.end());
                     auto res = cache.SubBalance(txidaddr, amount);
                     if (!res)
-                        LogPrintf("Can't subtract balance from dfc htlc txidaddr: %s\n", res.msg);
+                        LogPrintf("Can't subtract balance from dfc htlc (%s) txidaddr: %s\n", dfchtlc->creationTx.GetHex(), res.msg);
                     else
                     {
                         cache.CalculateOwnerRewards(ownerAddress,pindex->nHeight);
@@ -2794,7 +2776,7 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
 
                 if (status == CICXSubmitEXTHTLC::STATUS_EXPIRED && order->orderType == CICXOrder::TYPE_EXTERNAL)
                 {
-                    if (!cache.HasICXSubmitDFCHTLCOpen(exthtlc->offerTx))
+                    if (!cache.ExistedICXSubmitDFCHTLC(exthtlc->offerTx, isPreEunosPaya))
                     {
                         CTokenAmount makerDeposit{DCT_ID{0}, offer->takerFee};
                         cache.CalculateOwnerRewards(order->ownerAddress,pindex->nHeight);
@@ -2893,25 +2875,48 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
         mnview.IncrementMintedBy(minterKey);
 
         // Store block staker height for use in coinage
-        if (pindex->nHeight >= chainparams.GetConsensus().DakotaCrescentHeight) {
+        if (pindex->nHeight >= static_cast<uint32_t>(Params().GetConsensus().EunosPayaHeight)) {
+            mnview.SetSubNodesBlockTime(minterKey, static_cast<uint32_t>(pindex->nHeight), ctxState.subNode, pindex->GetBlockTime());
+        } else if (pindex->nHeight >= static_cast<uint32_t>(Params().GetConsensus().DakotaCrescentHeight)) {
             mnview.SetMasternodeLastBlockTime(minterKey, static_cast<uint32_t>(pindex->nHeight), pindex->GetBlockTime());
         }
     }
     mnview.SetLastHeight(pindex->nHeight);
 
-    if (fCheckpointsEnabled) {
-        auto &checkpoints = chainparams.Checkpoints().mapCheckpoints;
-        auto it = checkpoints.lower_bound(pindex->nHeight);
-        if (it != checkpoints.begin()) {
-            --it;
-            CCustomCSView pruned(mnview);
-            mnview.ForEachUndo([&](UndoKey const & key, CLazySerialize<CUndo>) {
-                if (key.height >= it->first) { // don't erase checkpoint height
-                    return false;
-                }
-                return pruned.DelUndo(key).ok;
-            });
+    auto &checkpoints = chainparams.Checkpoints().mapCheckpoints;
+    auto it = checkpoints.lower_bound(pindex->nHeight);
+    if (it != checkpoints.begin()) {
+        --it;
+        bool pruneStarted = false;
+        auto time = GetTimeMillis();
+        CCustomCSView pruned(mnview);
+        static uint32_t lastUndoHeight = 0;
+        mnview.ForEachUndo([&](UndoKey const & key, CLazySerialize<CUndo>) {
+            if (key.height >= it->first) { // don't erase checkpoint height
+                return false;
+            }
+            // keep txs in undo, remove undos for block
+            if (fCheckpointsEnabled && !key.txid.IsNull()) {
+                return true;
+            }
+            if (!pruneStarted) {
+                pruneStarted = true;
+                LogPrintf("Pruning undo data prior %d, it can take a while...\n", it->first);
+            }
+            return pruned.DelUndo(key).ok;
+        }, UndoKey{lastUndoHeight});
+        // we need at least one full loop to ensure previous undos are pruned
+        if (!lastUndoHeight) {
+            lastUndoHeight = it->first;
+        }
+        if (pruneStarted) {
+            lastUndoHeight = it->first;
+            auto& map = pruned.GetStorage().GetRaw();
+            compactBegin = map.begin()->first;
+            compactEnd = map.rbegin()->first;
             pruned.Flush();
+            LogPrintf("Pruning undo data finished.\n");
+            LogPrint(BCLog::BENCH, "    - Pruning undo data takes: %dms\n", GetTimeMillis() - time);
         }
     }
 
@@ -2931,7 +2936,7 @@ bool CChainState::FlushStateToDisk(
     int nManualPruneHeight)
 {
     int64_t nMempoolUsage = mempool.DynamicMemoryUsage();
-    LOCK(cs_main);
+    LOCK2(cs_main, cs_LastBlockFile);
     assert(this->CanFlushToDisk());
     static int64_t nLastWrite = 0;
     static int64_t nLastFlush = 0;
@@ -2941,7 +2946,6 @@ bool CChainState::FlushStateToDisk(
     {
         bool fFlushForPrune = false;
         bool fDoFullFlush = false;
-        LOCK(cs_LastBlockFile);
         if (fPruneMode && (fCheckForPruning || nManualPruneHeight > 0) && !fReindex) {
             if (nManualPruneHeight > 0) {
                 FindFilesToPruneManual(setFilesToPrune, nManualPruneHeight);
@@ -3029,6 +3033,13 @@ bool CChainState::FlushStateToDisk(
             // Flush the chainstate (which may refer to block index entries).
             if (!CoinsTip().Flush() || !pcustomcsDB->Flush()) {
                 return AbortNode(state, "Failed to write to coin or masternode db to disk");
+            }
+            if (!compactBegin.empty() && !compactEnd.empty()) {
+                auto time = GetTimeMillis();
+                pcustomcsDB->Compact(compactBegin, compactEnd);
+                compactBegin.clear();
+                compactEnd.clear();
+                LogPrint(BCLog::BENCH, "    - DB compacting takes: %dms\n", GetTimeMillis() - time);
             }
             nLastFlush = nNow;
             full_flush_completed = true;
@@ -3165,8 +3176,7 @@ bool CChainState::DisconnectTip(CValidationState& state, const CChainParams& cha
         CCustomCSView mnview(*pcustomcsview.get());
         assert(view.GetBestBlock() == pindexDelete->GetBlockHash());
         std::vector<CAnchorConfirmMessage> disconnectedConfirms;
-        std::map<uint256, CDoubleSignFact> disconnectedCriminals;
-        if (DisconnectBlock(block, pindexDelete, view, mnview, disconnectedConfirms, disconnectedCriminals) != DISCONNECT_OK) {
+        if (DisconnectBlock(block, pindexDelete, view, mnview, disconnectedConfirms) != DISCONNECT_OK) {
             // no usable history
             if (paccountHistoryDB) {
                 paccountHistoryDB->Discard();
@@ -3197,10 +3207,6 @@ bool CChainState::DisconnectTip(CValidationState& state, const CChainParams& cha
                 panchorAwaitingConfirms->ReVote();
             }
         }
-        for (auto const & cr : disconnectedCriminals) {
-            pcriminals->AddCriminalProof(cr.first, cr.second.blockHeader, cr.second.conflictBlockHeader);
-        }
-        pcriminals->Flush();
     }
     LogPrint(BCLog::BENCH, "- Disconnect block: %.2fms\n", (GetTimeMicros() - nStart) * MILLI);
     // Write the chain state to disk, if necessary.
@@ -3329,8 +3335,7 @@ bool CChainState::ConnectTip(CValidationState& state, const CChainParams& chainp
         CCoinsViewCache view(&CoinsTip());
         CCustomCSView mnview(*pcustomcsview.get());
         std::vector<uint256> rewardedAnchors;
-        std::vector<uint256> bannedCriminals;
-        bool rv = ConnectBlock(blockConnecting, state, pindexNew, view, mnview, chainparams, rewardedAnchors, bannedCriminals);
+        bool rv = ConnectBlock(blockConnecting, state, pindexNew, view, mnview, chainparams, rewardedAnchors);
         GetMainSignals().BlockChecked(blockConnecting, state);
         if (!rv) {
             if (state.IsInvalid()) {
@@ -3364,9 +3369,6 @@ bool CChainState::ConnectTip(CValidationState& state, const CChainParams& chainp
             for (auto const & btcTxHash : rewardedAnchors) {
                 panchorAwaitingConfirms->EraseAnchor(btcTxHash);
             }
-        }
-        for (auto const & nodeId : bannedCriminals) {
-            pcriminals->RemoveCriminalProofs(nodeId);
         }
     }
     int64_t nTime4 = GetTimeMicros(); nTimeFlush += nTime4 - nTime3;
@@ -3477,6 +3479,22 @@ void CChainState::PruneBlockIndexCandidates() {
 //    LogPrintf("TRACE PruneBlockIndexCandidates() after: setBlockIndexCandidates: %i\n", setBlockIndexCandidates.size());
 }
 
+//! Returns last CBlockIndex* that is a checkpoint
+static CBlockIndex* GetLastCheckpoint(const CCheckpointData& data) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+{
+    const MapCheckpoints& checkpoints = data.mapCheckpoints;
+
+    for (const MapCheckpoints::value_type& i : reverse_iterate(checkpoints))
+    {
+        const uint256& hash = i.second;
+        CBlockIndex* pindex = LookupBlockIndex(hash);
+        if (pindex) {
+            return pindex;
+        }
+    }
+    return nullptr;
+}
+
 /**
  * Try to make some progress towards making pindexMostWork the active block.
  * pblock is either nullptr or a pointer to a CBlock corresponding to pindexMostWork.
@@ -3538,24 +3556,27 @@ bool CChainState::ActivateBestChainStep(CValidationState& state, const CChainPar
             state = CValidationState();
             if (!ConnectTip(state, chainparams, pindexConnect, pindexConnect == pindexMostWork ? pblock : std::shared_ptr<const CBlock>(), connectTrace, disconnectpool)) {
                 if (state.IsInvalid()) {
-                    // The block violates a consensus rule.
-                    auto reason = state.GetReason();
-                    if (reason == ValidationInvalidReason::BLOCK_INVALID_HEADER) {
-                        // at this stage only high hash error can be in header
-                        // so just skip that block
-                        continue;
-                    }
                     fContinue = false;
+                    if (state.GetRejectReason() == "high-hash") {
+                        UpdateMempoolForReorg(disconnectpool, false);
+                        return false;
+                    }
                     fInvalidFound = true;
                     InvalidChainFound(vpindexToConnect.front());
-                    if (reason == ValidationInvalidReason::BLOCK_MUTATED) {
+                    if (state.GetReason() == ValidationInvalidReason::BLOCK_MUTATED) {
                         // prior EunosHeight we shoutdown node on mutated block
                         if (ShutdownRequested()) {
                             return false;
                         }
                         // now block cannot be part of blockchain either
                         // but it can be produced by outdated/malicious masternode
-                        // so we should not shoutdown entire network
+                        // so we should not shutdown entire network
+                        if (auto blockIndex = ChainActive()[vpindexToConnect.front()->nHeight]) {
+                            auto checkPoint = GetLastCheckpoint(chainparams.Checkpoints());
+                            if (checkPoint && blockIndex->nHeight > checkPoint->nHeight) {
+                                disconnectBlocksTo(blockIndex);
+                            }
+                        }
                     }
                     if (fCheckpointsEnabled && pindexConnect == pindexMostWork
                     && (pindexConnect->nHeight < chainparams.GetConsensus().EunosHeight
@@ -3813,6 +3834,10 @@ bool CChainState::InvalidateBlock(CValidationState& state, const CChainParams& c
 
     {
         LOCK(cs_main);
+        CBlockIndex* pcheckpoint = GetLastCheckpoint(chainparams.Checkpoints());
+        if (pcheckpoint && pindex->nHeight <= pcheckpoint->nHeight)
+            return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("Cannot invalidate block prior last checkpoint height %d", pcheckpoint->nHeight), REJECT_CHECKPOINT, "");
+
         for (const auto& entry : m_blockman.m_block_index) {
             CBlockIndex *candidate = entry.second;
             // We don't need to put anything in our active chain into the
@@ -3836,8 +3861,7 @@ bool CChainState::InvalidateBlock(CValidationState& state, const CChainParams& c
         // Make sure the queue of validation callbacks doesn't grow unboundedly.
         LimitValidationInterfaceQueue();
 
-        LOCK(cs_main);
-        LOCK(::mempool.cs); // Lock for as long as disconnectpool is in scope to make sure UpdateMempoolForReorg is called after DisconnectTip without unlocking in between
+        LOCK2(cs_main, ::mempool.cs); // Lock for as long as disconnectpool is in scope to make sure UpdateMempoolForReorg is called after DisconnectTip without unlocking in between
         if (!m_chain.Contains(pindex)) break;
         pindex_was_in_chain = true;
         CBlockIndex *invalid_walk_tip = m_chain.Tip();
@@ -4117,7 +4141,7 @@ static bool FindUndoPos(CValidationState &state, int nFile, FlatFilePos &pos, un
     return true;
 }
 
-bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOS, bool fCheckMerkleRoot)
+bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::Params& consensusParams, CheckContextState& ctxState, bool fCheckPOS, bool fCheckMerkleRoot)
 {
     // These are checks that are independent of context.
 
@@ -4126,12 +4150,13 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
-    if (!fIsFakeNet && fCheckPOS && !pos::ContextualCheckProofOfStake(block, consensusParams, pcustomcsview.get()))
+    if (!fIsFakeNet && fCheckPOS && !pos::ContextualCheckProofOfStake(block, consensusParams, pcustomcsview.get(), ctxState))
         return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "high-hash", "proof of stake failed");
 
     // Check the merkle root.
     // block merkle root is delayed to ConnectBlock to ensure account changes
-    if (fCheckMerkleRoot && block.height < consensusParams.EunosHeight) {
+    if (fCheckMerkleRoot && (block.height < consensusParams.EunosHeight
+    || block.height >= consensusParams.EunosKampungHeight)) {
         bool mutated;
         uint256 hashMerkleRoot2 = BlockMerkleRoot(block, &mutated);
         if (block.hashMerkleRoot != hashMerkleRoot2)
@@ -4163,7 +4188,6 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
         TBytes dummy;
         for (unsigned int i = 1; i < block.vtx.size(); i++) {
             if (block.vtx[i]->IsCoinBase() &&
-                !IsCriminalProofTx(*block.vtx[i], dummy) &&
                 !IsAnchorRewardTx(*block.vtx[i], dummy) &&
                 !IsAnchorRewardTxPlus(*block.vtx[i], dummy))
                 return state.Invalid(ValidationInvalidReason::CONSENSUS, false, REJECT_INVALID, "bad-cb-multiple", "more than one coinbase");
@@ -4255,22 +4279,6 @@ std::vector<unsigned char> GenerateCoinbaseCommitment(CBlock& block, const CBloc
     return commitment;
 }
 
-//! Returns last CBlockIndex* that is a checkpoint
-static CBlockIndex* GetLastCheckpoint(const CCheckpointData& data) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
-{
-    const MapCheckpoints& checkpoints = data.mapCheckpoints;
-
-    for (const MapCheckpoints::value_type& i : reverse_iterate(checkpoints))
-    {
-        const uint256& hash = i.second;
-        CBlockIndex* pindex = LookupBlockIndex(hash);
-        if (pindex) {
-            return pindex;
-        }
-    }
-    return nullptr;
-}
-
 /** Context-dependent validity checks.
  *  By "context", we mean only the previous block headers, but not the UTXO
  *  set; UTXO-related validity checks are done in ConnectBlock().
@@ -4287,30 +4295,33 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 
     // Check proof of work
     const Consensus::Params& consensusParams = params.GetConsensus();
-    if (block.nBits != pos::GetNextWorkRequired(pindexPrev, &block, consensusParams))
+    if (block.nBits != pos::GetNextWorkRequired(pindexPrev, block.nTime, consensusParams))
         return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "bad-diffbits", "incorrect proof of work");
 
     // Check against checkpoints
-    if (fCheckpointsEnabled) {
-        // Don't accept any forks from the main chain prior to last checkpoint.
-        // GetLastCheckpoint finds the last checkpoint in MapCheckpoints that's in our
-        // g_blockman.m_block_index.
-        CBlockIndex* pcheckpoint = GetLastCheckpoint(params.Checkpoints());
-        if (pcheckpoint && nHeight < pcheckpoint->nHeight)
-            return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("%s: forked chain older than last checkpoint (height %d)", __func__, nHeight), REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
-    }
+    // Don't accept any forks from the main chain prior to last checkpoint.
+    // GetLastCheckpoint finds the last checkpoint in MapCheckpoints that's in our
+    // g_blockman.m_block_index.
+    CBlockIndex* pcheckpoint = GetLastCheckpoint(params.Checkpoints());
+    if (pcheckpoint && nHeight <= pcheckpoint->nHeight)
+        return state.Invalid(ValidationInvalidReason::BLOCK_CHECKPOINT, error("%s: forked chain older than last checkpoint (height %d)", __func__, nHeight), REJECT_CHECKPOINT, "bad-fork-prior-to-checkpoint");
 
     // Check timestamp against prev
     if (block.GetBlockTime() <= pindexPrev->GetMedianTimePast())
-        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "time-too-old", "block's timestamp is too early");
+        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "time-too-old", strprintf("block's timestamp is too early. Block time: %d Min time: %d", block.GetBlockTime(), pindexPrev->GetMedianTimePast()));
 
     // Check timestamp
+    if (Params().NetworkIDString() != CBaseChainParams::REGTEST && block.height >= static_cast<uint64_t>(consensusParams.EunosPayaHeight)) {
+        if (block.GetBlockTime() > GetTime() + MAX_FUTURE_BLOCK_TIME_EUNOSPAYA)
+            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", strprintf("block timestamp too far in the future. Block time: %d Max time: %d", block.GetBlockTime(), GetTime() + MAX_FUTURE_BLOCK_TIME_EUNOSPAYA));
+    }
+
     if (block.GetBlockTime() > nAdjustedTime + MAX_FUTURE_BLOCK_TIME)
         return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
     if (block.height >= static_cast<uint64_t>(consensusParams.DakotaCrescentHeight)) {
         if (block.GetBlockTime() > GetTime() + MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT)
-            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
+            return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", strprintf("block timestamp too far in the future. Block time: %d Max time: %d", block.GetBlockTime(), GetTime() + MAX_FUTURE_BLOCK_TIME_DAKOTACRESCENT));
     }
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:
@@ -4431,39 +4442,8 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader& block, CValidationState
             return true;
         }
 
-        /// @attention It looks like we can't check ContextualCheckProofOfStake here anymore! Due to 'minter' may be not created/activated at this time!
-//        if (!fIsFakeNet && !pos::ContextualCheckProofOfStake(block, chainparams.GetConsensus(), pcustomcsview.get())) {
-//            return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, error("%s: Consensus::ContextualCheckProofOfStake: block %s: bad-pos-header (MN not exist or can't stake)", __func__, hash.ToString()), REJECT_INVALID, "bad-pos-header");
-//        }
         if (!fIsFakeNet && !pos::CheckHeaderSignature(block)) {
             return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, error("%s: Consensus::CheckHeaderSignature: block %s: bad-pos-header-signature", __func__, hash.ToString()), REJECT_INVALID, "bad-pos-header-signature");
-        }
-
-        // Add MintedBlockHeader entity to DB and check for criminal (limited application for now due to possible "far future" of the header)
-        if (fCriminals) {
-            CKeyID minterKey;
-            assert(block.ExtractMinterKey(minterKey));
-            auto it = pcustomcsview->GetMasternodeIdByOperator(minterKey);
-            if (it) {
-            	auto const & nodeId = *it;
-
-                std::map <uint256, CBlockHeader> blockHeaders{};
-                pcriminals->FetchMintedHeaders(nodeId, block.mintedBlocks, blockHeaders, fIsFakeNet);
-                if (blockHeaders.find(hash) == blockHeaders.end()) {
-            	    pcriminals->WriteMintedBlockHeader(nodeId, block.mintedBlocks, hash, block, fIsFakeNet);
-            	}
-
-                auto state = pcustomcsview->GetMasternode(nodeId)->GetState(block.height);
-                if (state != CMasternode::PRE_BANNED && state != CMasternode::BANNED) { // deny check & addition if masternode was already punished
-                    for (auto const & blockHeader : blockHeaders) {
-                        if (IsDoubleSignRestricted(block.height, blockHeader.second.height)) { // we already have equal minters and even mintedBlocks counter
-                            // this is the ONLY place
-                            pcriminals->AddCriminalProof(nodeId, block, blockHeader.second);
-                        }
-                    }
-                }
-                pcriminals->Flush();
-            }
         }
 
         // Get prev block index
@@ -4628,7 +4608,8 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CVali
         if (pindex->nChainWork < nMinimumChainWork) return true;
     }
 
-    if (!CheckBlock(block, state, chainparams.GetConsensus(), false) || // false cause we can check pos context only on ConnectBlock
+    CheckContextState ctxState;
+    if (!CheckBlock(block, state, chainparams.GetConsensus(), ctxState, false) || // false cause we can check pos context only on ConnectBlock
         !ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev)) {
         assert(IsBlockReason(state.GetReason()));
         if (state.IsInvalid() && state.GetReason() != ValidationInvalidReason::BLOCK_MUTATED) {
@@ -4659,11 +4640,6 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CVali
     FlushStateToDisk(chainparams, state, FlushStateMode::NONE);
 
     CheckBlockIndex(chainparams.GetConsensus());
-
-    // Only for SPV, post-fork rule can be removed later, skip on IBD.
-    if (spv::pspv && pindex->nHeight >= chainparams.GetConsensus().DakotaHeight && !IsInitialBlockDownload()) {
-        panchors->CheckPendingAnchors();
-    }
 
     return true;
 }
@@ -4800,7 +4776,8 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
         // belt-and-suspenders.
         // reverts a011b9db38ce6d3d5c1b67c1e3bad9365b86f2ce
         // we can end up in isolation banning all other nodes
-        bool ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), false); // false cause we can check pos context only on ConnectBlock
+        CheckContextState ctxState;
+        bool ret = CheckBlock(*pblock, state, chainparams.GetConsensus(), ctxState, false); // false cause we can check pos context only on ConnectBlock
         if (ret) {
             // Store to disk
             ret = ::ChainstateActive().AcceptBlock(pblock, state, chainparams, &pindex, fForceProcessing, nullptr, fNewBlock);
@@ -4835,6 +4812,10 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
     if (!::ChainstateActive().IsInitialBlockDownload() && tip && tip != oldTip && spv::pspv) // spv::pspv not necessary here, but for disabling in old tests
     {
         ProcessAuthsIfTipChanged(oldTip, tip, chainparams.GetConsensus());
+
+        if (tip->nHeight >= chainparams.GetConsensus().DakotaHeight) {
+            panchors->CheckPendingAnchors();
+        }
     }
 
     return true;
@@ -4846,22 +4827,22 @@ bool TestBlockValidity(CValidationState& state, const CChainParams& chainparams,
     assert(pindexPrev && pindexPrev == ::ChainActive().Tip());
     CCoinsViewCache viewNew(&::ChainstateActive().CoinsTip());
     std::vector<uint256> dummyRewardedAnchors;
-    std::vector<uint256> dummyBannedCriminals;
     CCustomCSView mnview(*pcustomcsview.get());
     uint256 block_hash(block.GetHash());
     CBlockIndex indexDummy(block);
     indexDummy.pprev = pindexPrev;
     indexDummy.nHeight = pindexPrev->nHeight + 1;
     indexDummy.phashBlock = &block_hash;
+    CheckContextState ctxState;
 
     // NOTE: ContextualCheckProofOfStake is called by CheckBlock
     if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime()))
         return error("%s: Consensus::ContextualCheckBlockHeader: %s", __func__, FormatStateMessage(state));
-    if (!CheckBlock(block, state, chainparams.GetConsensus(), false, fCheckMerkleRoot))
+    if (!CheckBlock(block, state, chainparams.GetConsensus(), ctxState, false, fCheckMerkleRoot))
         return error("%s: Consensus::CheckBlock: %s", __func__, FormatStateMessage(state));
     if (!ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindexPrev))
         return error("%s: Consensus::ContextualCheckBlock: %s", __func__, FormatStateMessage(state));
-    if (!::ChainstateActive().ConnectBlock(block, state, &indexDummy, viewNew, mnview, chainparams, dummyRewardedAnchors, dummyBannedCriminals, true))
+    if (!::ChainstateActive().ConnectBlock(block, state, &indexDummy, viewNew, mnview, chainparams, dummyRewardedAnchors, true))
         return false;
     assert(state.IsValid());
 
@@ -5268,11 +5249,13 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
             break;
         }
         CBlock block;
+        CheckContextState ctxState;
+
         // check level 0: read from disk
         if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus()))
             return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
         // check level 1: verify block validity
-        if (nCheckLevel >= 1 && !CheckBlock(block, state, chainparams.GetConsensus(), false)) // false cause we can check pos context only on ConnectBlock
+        if (nCheckLevel >= 1 && !CheckBlock(block, state, chainparams.GetConsensus(), ctxState, false)) // false cause we can check pos context only on ConnectBlock
             return error("%s: *** found bad block at %d, hash=%s (%s)\n", __func__,
                          pindex->nHeight, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
         // check level 2: verify undo validity
@@ -5288,8 +5271,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
         if (nCheckLevel >= 3 && (coins.DynamicMemoryUsage() + ::ChainstateActive().CoinsTip().DynamicMemoryUsage()) <= nCoinCacheUsage) {
             assert(coins.GetBestBlock() == pindex->GetBlockHash());
             std::vector<CAnchorConfirmMessage> disconnectedConfirms; // dummy
-            CCriminalProofsView::CMnCriminals disconnectedCriminals; // dummy
-            DisconnectResult res = ::ChainstateActive().DisconnectBlock(block, pindex, coins, mnview, disconnectedConfirms, disconnectedCriminals);
+            DisconnectResult res = ::ChainstateActive().DisconnectBlock(block, pindex, coins, mnview, disconnectedConfirms);
             if (res == DISCONNECT_FAILED) {
                 return error("VerifyDB(): *** irrecoverable inconsistency in block data at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
             }
@@ -5325,8 +5307,7 @@ bool CVerifyDB::VerifyDB(const CChainParams& chainparams, CCoinsView *coinsview,
             if (!ReadBlockFromDisk(block, pindex, chainparams.GetConsensus()))
                 return error("VerifyDB(): *** ReadBlockFromDisk failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
             std::vector<uint256> dummyRewardedAnchors;
-            std::vector<uint256> dummyBannedCriminals;
-            if (!::ChainstateActive().ConnectBlock(block, state, pindex, coins, mnview, chainparams, dummyRewardedAnchors, dummyBannedCriminals))
+            if (!::ChainstateActive().ConnectBlock(block, state, pindex, coins, mnview, chainparams, dummyRewardedAnchors))
                 return error("VerifyDB(): *** found unconnectable block at %d, hash=%s (%s)", pindex->nHeight, pindex->GetBlockHash().ToString(), FormatStateMessage(state));
         }
     }
@@ -5405,8 +5386,7 @@ bool CChainState::ReplayBlocks(const CChainParams& params, CCoinsView* view, CCu
             }
             LogPrintf("Rolling back %s (%i)\n", pindexOld->GetBlockHash().ToString(), pindexOld->nHeight);
             std::vector<CAnchorConfirmMessage> disconnectedConfirms; // dummy
-            CCriminalProofsView::CMnCriminals disconnectedCriminals; // dummy
-            DisconnectResult res = DisconnectBlock(block, pindexOld, cache, mncache, disconnectedConfirms, disconnectedCriminals);
+            DisconnectResult res = DisconnectBlock(block, pindexOld, cache, mncache, disconnectedConfirms);
             if (res == DISCONNECT_FAILED) {
                 return error("RollbackBlock(): DisconnectBlock failed at %d, hash=%s", pindexOld->nHeight, pindexOld->GetBlockHash().ToString());
             }

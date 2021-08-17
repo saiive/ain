@@ -27,7 +27,6 @@
 #include <key_io.h>
 #include <masternodes/accountshistory.h>
 #include <masternodes/anchors.h>
-#include <masternodes/criminals.h>
 #include <masternodes/masternodes.h>
 #include <miner.h>
 #include <net.h>
@@ -279,7 +278,6 @@ void Shutdown(InitInterfaces& interfaces)
         panchorauths.reset();
         pcustomcsview.reset();
         pcustomcsDB.reset();
-        pcriminals.reset();
         pblocktree.reset();
     }
     for (const auto& client : interfaces.chain_clients) {
@@ -462,7 +460,6 @@ void SetupServerArgs()
     gArgs.AddArg("-subsidytest", "Flag to enable new subsidy rules (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-anchorquorum", "Min quorum size (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-spv", "Enable SPV to bitcoin blockchain (default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    gArgs.AddArg("-criminals", "punishment of criminal nodes (default: 0, regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_resync", "Flag to reset spv database and resync from zero block (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-spv_rescan", "Block height to rescan from (default: 0 = off)", ArgsManager::ALLOW_INT, OptionsCategory::OPTIONS);
     gArgs.AddArg("-amkheight", "AMK fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
@@ -472,6 +469,8 @@ void SetupServerArgs()
     gArgs.AddArg("-dakotaheight", "Dakota fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-dakotacrescentheight", "DakotaCrescent fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
     gArgs.AddArg("-eunosheight", "Eunos fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
+    gArgs.AddArg("-eunospayaheight", "EunosPaya fork activation height (regtest only)", ArgsManager::ALLOW_ANY, OptionsCategory::CHAINPARAMS);
+    gArgs.AddArg("-jellyfish_regtest", "Configure the regtest network for jellyfish testing", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #ifdef USE_UPNP
 #if USE_UPNP
     gArgs.AddArg("-upnp", "Use UPnP to map the listening port (default: 1 when listening and no -proxy)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
@@ -1204,7 +1203,7 @@ bool AppInitParameterInteraction()
     nMaxTipAge = gArgs.GetArg("-maxtipage", DEFAULT_MAX_TIP_AGE);
     fIsFakeNet = Params().NetworkIDString() == "regtest" && gArgs.GetArg("-dummypos", false);
     CTxOut::SERIALIZE_FORCED_TO_OLD_IN_TESTS = Params().NetworkIDString() == "regtest" && gArgs.GetArg("-txnotokens", false);
-    fCriminals = gArgs.GetArg("-criminals", false);
+
     return true;
 }
 
@@ -1252,6 +1251,27 @@ bool AppInitLockDataDirectory()
         return false;
     }
     return true;
+}
+
+void SetupAnchorSPVDatabases(bool resync) {
+    // Close and open database
+    panchors.reset();
+    panchors = MakeUnique<CAnchorIndex>(nDefaultDbCache << 20, false, gArgs.GetBoolArg("-spv", true) && resync);
+
+    // load anchors after spv due to spv (and spv height) not set before (no last height yet)
+    if (gArgs.GetBoolArg("-spv", true)) {
+        // Close database
+        spv::pspv.reset();
+
+        // Open database based on network
+        if (Params().NetworkIDString() == "regtest") {
+            spv::pspv = MakeUnique<spv::CFakeSpvWrapper>();
+        } else if (Params().NetworkIDString() == "test" || Params().NetworkIDString() == "devnet") {
+            spv::pspv = MakeUnique<spv::CSpvWrapper>(false, nMinDbCache << 20, false, resync);
+        } else {
+            spv::pspv = MakeUnique<spv::CSpvWrapper>(true, nMinDbCache << 20, false, resync);
+        }
+    }
 }
 
 bool AppInitMain(InitInterfaces& interfaces)
@@ -1478,7 +1498,7 @@ bool AppInitMain(InitInterfaces& interfaces)
     int64_t nTotalCache = (gArgs.GetArg("-dbcache", nDefaultDbCache) << 20);
     nTotalCache = std::max(nTotalCache, nMinDbCache << 20); // total cache cannot be less than nMinDbCache
     nTotalCache = std::min(nTotalCache, nMaxDbCache << 20); // total cache cannot be greater than nMaxDbcache
-    auto nCustomCacheSize = nTotalCache; // used for criminals and customs
+    auto nCustomCacheSize = nTotalCache; // used for customs
     int64_t nBlockTreeDBCache = std::min(nTotalCache / 8, nMaxBlockDBCache << 20);
     nTotalCache -= nBlockTreeDBCache;
     int64_t nTxIndexCache = std::min(nTotalCache / 8, gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX) ? nMaxTxIndexCache << 20 : 0);
@@ -1584,9 +1604,6 @@ bool AppInitMain(InitInterfaces& interfaces)
                         _("Error reading from database, shutting down.").translated,
                         "", CClientUIInterface::MSG_ERROR);
                 });
-
-                pcriminals.reset();
-                pcriminals = MakeUnique<CCriminalsView>(GetDataDir() / "criminals", nCustomCacheSize, false, fReset || fReindexChainState);
 
                 pcustomcsDB.reset();
                 pcustomcsDB = MakeUnique<CStorageLevelDB>(GetDataDir() / "enhancedcs", nCustomCacheSize, false, fReset || fReindexChainState);
@@ -1709,10 +1726,6 @@ bool AppInitMain(InitInterfaces& interfaces)
         }
     }
 
-    // Load minter cache
-    auto minterCacheCount = pcustomcsview->LoadMinterCache();
-    LogPrintf("minter cache loaded with %d entries\n", minterCacheCount);
-
     // As LoadBlockIndex can take several minutes, it's possible the user
     // requested to kill the GUI during the last operation. If so, exit.
     // As the program has not fully started yet, Shutdown() is possibly overkill.
@@ -1755,22 +1768,17 @@ bool AppInitMain(InitInterfaces& interfaces)
         panchorauths = MakeUnique<CAnchorAuthIndex>();
         panchorAwaitingConfirms.reset();
         panchorAwaitingConfirms = MakeUnique<CAnchorAwaitingConfirms>();
-        panchors.reset();
+        SetupAnchorSPVDatabases(gArgs.GetBoolArg("-spv_resync", fReindex || fReindexChainState));
 
-        // Enable the anchors and spv by default
-        bool anchorsEnabled = true; 
-        panchors = MakeUnique<CAnchorIndex>(nDefaultDbCache << 20, false, gArgs.GetBoolArg("-spv", anchorsEnabled) && gArgs.GetBoolArg("-spv_resync", fReindex || fReindexChainState));
+        // Check if DB version changed
+        if (spv::pspv && SPV_DB_VERSION != spv::pspv->GetDBVersion()) {
+            SetupAnchorSPVDatabases(true);
+            assert(spv::pspv->SetDBVersion() == SPV_DB_VERSION);
+            LogPrintf("Cleared anchor and SPV dasebase. SPV DB version set to %d\n", SPV_DB_VERSION);
+        }
 
-        // load anchors after spv due to spv (and spv height) not set before (no last height yet)
-        if (gArgs.GetBoolArg("-spv", anchorsEnabled)) {
-            spv::pspv.reset();
-            if (Params().NetworkIDString() == "regtest") {
-                spv::pspv = MakeUnique<spv::CFakeSpvWrapper>();
-            } else if (Params().NetworkIDString() == "test" || Params().NetworkIDString() == "devnet") {
-                spv::pspv = MakeUnique<spv::CSpvWrapper>(false, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", fReindex || fReindexChainState));
-            } else {
-                spv::pspv = MakeUnique<spv::CSpvWrapper>(true, nMinDbCache << 20, false, gArgs.GetBoolArg("-spv_resync", fReindex || fReindexChainState));
-            }
+        if (spv::pspv) {
+            spv::pspv->Load();
         }
         panchors->Load();
 
@@ -1954,6 +1962,7 @@ bool AppInitMain(InitInterfaces& interfaces)
         bool atLeastOneRunningOperator = false;
         auto const operators = gArgs.GetArgs("-masternode_operator");
 
+        std::vector<pos::ThreadStaker::Args> stakersParams;
         for (auto const & op : operators) {
             // do not process duplicate operator option
             if (operatorsSet.count(op)) {
@@ -2011,22 +2020,23 @@ bool AppInitMain(InitInterfaces& interfaces)
                 }
             }
 
+            stakersParams.push_back(std::move(stakerParams));
             atLeastOneRunningOperator = true;
-
-            // Mint proof-of-stake blocks in background
-            threadGroup.create_thread(
-                std::bind(TraceThread<std::function<void()>>, "CoinStaker", [=]() {
-                    // Run ThreadStaker
-                    pos::ThreadStaker threadStaker;
-                    threadStaker(std::move(stakerParams), std::move(chainparams));
-                }
-            ));
         }
 
         if (!atLeastOneRunningOperator) {
             LogPrintf("Error: there is no valid masternode_operator\n");
             return false;
         }
+
+        // Mint proof-of-stake blocks in background
+        threadGroup.create_thread(
+            std::bind(TraceThread<std::function<void()>>, "CoinStaker", [=]() {
+                // Run ThreadStaker
+                pos::ThreadStaker threadStaker;
+                threadStaker(std::move(stakersParams), std::move(chainparams));
+            }
+        ));
     }
 
     return true;

@@ -49,6 +49,18 @@ public:
     virtual TBytes Value() = 0;
 };
 
+// Represents an empty iterator
+class CStorageKVEmptyIterator : public CStorageKVIterator {
+public:
+    ~CStorageKVEmptyIterator() override = default;
+    void Seek(const TBytes&) override {}
+    void Next() override {}
+    void Prev() override {}
+    bool Valid() override { return false; }
+    TBytes Key() override { return {}; }
+    TBytes Value() override { return {}; }
+};
+
 // Key-Value storage interface
 class CStorageKV {
 public:
@@ -135,7 +147,6 @@ public:
         return true;
     }
     bool Erase(const TBytes& key) override {
-        begin.empty() ? (begin = key) : (end = key);
         batch.Erase(refTBytes(key));
         return true;
     }
@@ -146,17 +157,9 @@ public:
     bool Flush() override { // Commit batch
         auto result = db.WriteBatch(batch);
         batch.Clear();
-        // prevent db fragmentation
-        if (!begin.empty() && !end.empty()) {
-            db.CompactRange(refTBytes(begin), refTBytes(end));
-        }
-        end.clear();
-        begin.clear();
         return result;
     }
     void Discard() override {
-        end.clear();
-        begin.clear();
         batch.Clear();
     }
     size_t SizeEstimate() const override {
@@ -165,13 +168,14 @@ public:
     std::unique_ptr<CStorageKVIterator> NewIterator() override {
         return MakeUnique<CStorageLevelDBIterator>(std::unique_ptr<CDBIterator>(db.NewIterator()));
     }
+    void Compact(const TBytes& begin, const TBytes& end) {
+        db.CompactRange(refTBytes(begin), refTBytes(end));
+    }
     bool IsEmpty() {
         return db.IsEmpty();
     }
 
 private:
-    TBytes end;
-    TBytes begin;
     CDBWrapper db;
     CDBBatch batch;
 };
@@ -414,6 +418,16 @@ public:
         UpdateValidity();
     }
 };
+
+// Creates an iterator to single level key value storage
+template<typename By, typename KeyType>
+CStorageIteratorWrapper<By, KeyType> NewKVIterator(const KeyType& key, MapKV& map) {
+    auto emptyParent = MakeUnique<CStorageKVEmptyIterator>();
+    auto flushableIterator = MakeUnique<CFlushableStorageKVIterator>(std::move(emptyParent), map);
+    CStorageIteratorWrapper<By, KeyType> it{std::move(flushableIterator)};
+    it.Seek(key);
+    return it;
+}
 
 class CStorageView {
 public:

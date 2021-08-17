@@ -316,10 +316,15 @@ class PoolSwapTest (DefiTestFramework):
         connect_nodes_bi(self.nodes, 1, 2)
         self.sync_blocks()
 
+        # Wipe mempool
+        self.nodes[0].clearmempool()
+        self.nodes[1].clearmempool()
+        self.nodes[2].clearmempool()
+
         assert(self.nodes[0].getblockcount() == 120) # eunos
 
         self.LP_DAILY_DFI_REWARD = self.nodes[0].getgov("LP_DAILY_DFI_REWARD")['LP_DAILY_DFI_REWARD']
-        assert_equal(self.LP_DAILY_DFI_REWARD, Decimal('103.08268000'))
+        assert_equal(self.LP_DAILY_DFI_REWARD, Decimal('14843.90592000')) # 144 blocks a day times 103.08268000
 
         print("Swapping tokens after eunos height...")
         self.poolswap(self.nodes)

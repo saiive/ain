@@ -16,8 +16,13 @@ RUN apt-get install -y apt-transport-https
 RUN apt install -y software-properties-common build-essential libtool autotools-dev automake \
 pkg-config bsdmainutils python3 libssl-dev libevent-dev libboost-system-dev \
 libboost-filesystem-dev libboost-chrono-dev libboost-test-dev libboost-thread-dev \
-libminiupnpc-dev libzmq3-dev libqrencode-dev \
+libminiupnpc-dev libzmq3-dev libqrencode-dev wget \
 curl cmake
+
+# install clang 11
+RUN wget https://apt.llvm.org/llvm.sh
+RUN chmod +x llvm.sh
+RUN ./llvm.sh 11
 
 # For Berkeley DB - but we don't need as we do a depends build.
 # RUN apt install -y libdb-dev
@@ -31,7 +36,7 @@ LABEL org.defichain.arch=${TARGET}
 WORKDIR /work/depends
 COPY ./depends .
 # XREF: #depends-make
-RUN make HOST=${TARGET} NO_QT=1
+RUN make HOST=${TARGET} NO_QT=1 -j $(nproc)
 
 # -----------
 FROM builder-base as builder
@@ -47,11 +52,11 @@ COPY . .
 RUN ./autogen.sh
 
 # XREF: #make-configure
-RUN ./configure --prefix=`pwd`/depends/${TARGET}
+RUN ./configure CC=clang-11 CXX=clang++-11 --prefix=`pwd`/depends/${TARGET}
 
 ARG BUILD_VERSION=
 
-RUN make
+RUN make -j $(nproc)
 RUN mkdir /app && make prefix=/ DESTDIR=/app install && cp /work/README.md /app/.
 
 # -----------

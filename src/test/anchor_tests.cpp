@@ -11,7 +11,7 @@
 
 struct SpvTestingSetup : public TestingSetup {
     SpvTestingSetup()
-        : TestingSetup(CBaseChainParams::REGTEST)
+        : TestingSetup(CBaseChainParams::MAIN)
     {
         spv::pspv = MakeUnique<spv::CFakeSpvWrapper>();
     }
@@ -21,6 +21,16 @@ struct SpvTestingSetup : public TestingSetup {
         spv::pspv.reset();
     }
 };
+
+// Generate keys and populate team
+void createTeams(std::vector<CKey>& signers, CAnchorData::CTeam& team) {
+    for (int i{0}; i < 5; ++i) {
+        CKey key;
+        key.MakeNewKey(true);
+        signers.push_back(key);
+        team.insert(key.GetPubKey().GetID());
+    }
+}
 
 BOOST_FIXTURE_TEST_SUITE(anchor_tests, SpvTestingSetup)
 
@@ -339,6 +349,96 @@ BOOST_AUTO_TEST_CASE(Test_GetLatestAnchorUpToDeFiHeight)
     BOOST_CHECK(falbackAnchor->txHash == uint256S("bc2"));
     BOOST_CHECK(falbackAnchor->anchor.height == 30);
     BOOST_CHECK(falbackAnchor->anchor.height < 45);
+}
+
+// Check order of anchor payment
+BOOST_AUTO_TEST_CASE(Test_AnchorConfirmationOrder)
+{
+    // Team and private keys
+    std::vector<CKey> signers;
+    CAnchorData::CTeam team;
+
+    createTeams(signers, team);
+
+    // Create confirm data
+    CAnchorConfirmData confirm{uint256S(std::string(64, '9')), 0, 0, CKeyID(), 1};
+    CAnchorConfirmDataPlus confirmPlus{confirm};
+
+    // Create 16 signed confirms that meet quorum
+    const std::string digits = "0123456789ABCDEF";
+    for (std::string::size_type j{1}; j <= digits.size(); ++j) {
+        // Previous system organised on TX hash. Set lowest hash to highest height for tests.
+        confirmPlus.btcTxHash = uint256S(std::string(64, digits[digits.size() - j]));
+
+        // New system organises by TX height, lowest first.
+        confirmPlus.btcTxHeight = j * 1000;
+
+        // Sign with every key to meet quorum
+        for (const auto& signee : signers) {
+            CAnchorConfirmMessage confirmMsg{confirmPlus};
+            signee.SignCompact(confirmMsg.GetSignHash(), confirmMsg.signature);
+            panchorAwaitingConfirms->Add(confirmMsg);
+        }
+    }
+
+    // Get results
+    auto result = panchorAwaitingConfirms->GetQuorumFor(team);
+
+    // First result that meets quorum is return, no others.
+    BOOST_CHECK_EQUAL(result.size(), 4);
+
+    // Expect to get lowset BTC height first, not lowest TX hash which would be block 16,000.
+    BOOST_CHECK_EQUAL(result[0].btcTxHeight, 1000);
+}
+
+BOOST_AUTO_TEST_CASE(Test_AnchorFinalMsgCount)
+{
+    // Team and private keys
+    std::vector<CKey> signers;
+    CAnchorData::CTeam team;
+
+    createTeams(signers, team);
+
+    // Create confirm data
+    CAnchorConfirmData confirm{uint256S(std::string(64, '9')), 0, 0, CKeyID(), 1};
+    CAnchorConfirmDataPlus confirmPlus{confirm};
+    CAnchorFinalizationMessagePlus finalMsg{confirmPlus};
+
+    for (int i{0}; i < 4 && i < signers.size(); ++i) {
+        CAnchorConfirmMessage confirmMsg{confirmPlus};
+        signers[i < 3 ? i : i - 1].SignCompact(confirmMsg.GetSignHash(), confirmMsg.signature);
+        finalMsg.sigs.push_back(confirmMsg.signature);
+    }
+
+    // Double sig should excluded
+    BOOST_CHECK_EQUAL(CheckSigs(finalMsg.GetSignHash(), finalMsg.sigs, team), 3);
+}
+
+
+BOOST_AUTO_TEST_CASE(Test_AnchorMsgCount)
+{
+    // Team and private keys
+    std::vector<CKey> signers;
+    CAnchorData::CTeam team;
+
+    createTeams(signers, team);
+
+    // Create confirm data
+    uint256 blockHash{uint256S(std::string(64, '9'))};
+    CAnchorData data{blockHash, 0, blockHash, CAnchorData::CTeam{}};
+    CAnchor anchor{data};
+
+    for (int i{0}; i < 4 && i < signers.size(); ++i) {
+        CAnchorAuthMessage authMsg{data};
+        authMsg.SignWithKey(signers[i < 3 ? i : i - 1]);
+        anchor.sigs.push_back(authMsg.GetSignature());
+    }
+
+    // Double sig should included
+    BOOST_CHECK_EQUAL(anchor.CheckAuthSigs(team, 0), true);
+
+    // Double sig should excluded
+    BOOST_CHECK_EQUAL(anchor.CheckAuthSigs(team, std::numeric_limits<int>::max()), false);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

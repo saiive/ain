@@ -59,6 +59,7 @@ std::unique_ptr<CSpvWrapper> pspv;
 // Prefixes to the masternodes database (masternodes/)
 static const char DB_SPVBLOCKS = 'B';     // spv "blocks" table
 static const char DB_SPVTXS    = 'T';     // spv "tx2msg" table
+static const char DB_VERSION   = 'V';
 
 uint64_t const DEFAULT_BTC_FEERATE = TX_FEE_PER_KB;
 uint64_t const DEFAULT_BTC_FEE_PER_KB = DEFAULT_FEE_PER_KB;
@@ -210,7 +211,10 @@ CSpvWrapper::CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory, bool f
     LogPrint(BCLog::SPV, "internal logs set to %s\n", spv_logfilename);
     spv_log2console = 0;
     spv_mainnet = isMainnet ? 1 : 0;
+}
 
+void CSpvWrapper::Load()
+{
     BRMasterPubKey mpk = BR_MASTER_PUBKEY_NONE;
     mpk = BRBIP32ParseMasterPubKey(Params().GetConsensus().spv.wallet_xpub.c_str());
 
@@ -241,8 +245,8 @@ CSpvWrapper::CSpvWrapper(bool isMainnet, size_t nCacheSize, bool fMemory, bool f
     auto userAddresses = new BRUserAddresses;
     auto htlcAddresses = new BRUserAddresses;
     const auto wallets = GetWallets();
-    for (const auto& wallet : wallets) {
-        for (const auto& entry : wallet->mapAddressBook)
+    for (const auto& item : wallets) {
+        for (const auto& entry : item->mapAddressBook)
         {
             if (entry.second.purpose == "spv")
             {
@@ -424,25 +428,28 @@ void CSpvWrapper::OnTxUpdated(const UInt256 txHashes[], size_t txCount, uint32_t
     for (size_t i = 0; i < txCount; ++i) {
         uint256 const txHash{to_uint256(txHashes[i])};
         const uint256 btcHash{to_uint256(blockHash)};
-        UpdateTx(txHash, blockHeight, timestamp, btcHash);
-        LogPrint(BCLog::SPV, "tx updated, hash: %s, blockHeight: %d, timestamp: %d\n", txHash.ToString(), blockHeight, timestamp);
 
-        LOCK(cs_main);
-
-        CAnchorIndex::AnchorRec oldPending;
-        if (panchors->GetPendingByBtcTx(txHash, oldPending))
         {
-            LogPrint(BCLog::SPV, "updating anchor pending %s\n", txHash.ToString());
-            if (panchors->AddToAnchorPending(oldPending.anchor, txHash, blockHeight, true)) {
-                LogPrint(BCLog::ANCHORING, "Anchor pending added/updated %s\n", txHash.ToString());
+            LOCK(cs_main);
+
+            UpdateTx(txHash, blockHeight, timestamp, btcHash);
+            LogPrint(BCLog::SPV, "tx updated, hash: %s, blockHeight: %d, timestamp: %d\n", txHash.ToString(), blockHeight, timestamp);
+
+            CAnchorIndex::AnchorRec oldPending;
+            if (panchors->GetPendingByBtcTx(txHash, oldPending))
+            {
+                LogPrint(BCLog::SPV, "updating anchor pending %s\n", txHash.ToString());
+                if (panchors->AddToAnchorPending(oldPending.anchor, txHash, blockHeight, true)) {
+                    LogPrint(BCLog::ANCHORING, "Anchor pending added/updated %s\n", txHash.ToString());
+                }
             }
-        }
-        else if (auto exist = panchors->GetAnchorByBtcTx(txHash)) // update index. no any checks nor validations
-        {
-            LogPrint(BCLog::SPV, "updating anchor %s\n", txHash.ToString());
-            CAnchor oldAnchor{exist->anchor};
-            if (panchors->AddAnchor(oldAnchor, txHash, blockHeight, true)) {
-                LogPrint(BCLog::ANCHORING, "Anchor added/updated %s\n", txHash.ToString());
+            else if (auto exist = panchors->GetAnchorByBtcTx(txHash)) // update index. no any checks nor validations
+            {
+                LogPrint(BCLog::SPV, "updating anchor %s\n", txHash.ToString());
+                CAnchor oldAnchor{exist->anchor};
+                if (panchors->AddAnchor(oldAnchor, txHash, blockHeight, true)) {
+                    LogPrint(BCLog::ANCHORING, "Anchor added/updated %s\n", txHash.ToString());
+                }
             }
         }
 
@@ -456,9 +463,11 @@ void CSpvWrapper::OnTxDeleted(UInt256 txHash, int notifyUser, int recommendResca
     uint256 const hash(to_uint256(txHash));
     EraseTx(hash);
 
-    LOCK(cs_main);
-    panchors->DeleteAnchorByBtcTx(hash);
-    panchors->DeletePendingByBtcTx(hash);
+    {
+        LOCK(cs_main);
+        panchors->DeleteAnchorByBtcTx(hash);
+        panchors->DeletePendingByBtcTx(hash);
+    }
 
     OnTxNotify(txHash);
 
@@ -647,9 +656,9 @@ void CSpvWrapper::AddBitcoinHash(const uint160 &userHash, const bool htlc)
     BRWalletImportAddress(wallet, userHash, htlc);
 }
 
-void CSpvWrapper::RebuildBloomFilter()
+void CSpvWrapper::RebuildBloomFilter(bool rescan)
 {
-    BRPeerManagerRebuildBloomFilter(manager);
+    BRPeerManagerRebuildBloomFilter(manager, rescan);
 }
 
 std::string CSpvWrapper::DumpBitcoinPrivKey(const CWallet* pwallet, const std::string &strAddress)
@@ -1295,6 +1304,17 @@ UniValue CSpvWrapper::CreateHTLCTransaction(CWallet* const pwallet, const char* 
     result.pushKV("txid", txid);
     result.pushKV("sendmessage", DecodeSendResult(sendResult));
     return result;
+}
+
+int CSpvWrapper::GetDBVersion() {
+    int version{0};
+    db->Read(DB_VERSION, version);
+    return version;
+}
+
+int CSpvWrapper::SetDBVersion() {
+    db->Write(DB_VERSION, SPV_DB_VERSION);
+    return GetDBVersion();
 }
 
 /*

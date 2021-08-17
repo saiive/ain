@@ -3,7 +3,7 @@
 #include <pos_kernel.h>
 
 // Here (but not a class method) just by similarity with other '..ToJSON'
-UniValue mnToJSON(uint256 const & nodeId, CMasternode const& node, bool verbose)
+UniValue mnToJSON(uint256 const & nodeId, CMasternode const& node, bool verbose, const std::set<std::pair<CKeyID, uint256>>& mnIds, const CWallet* pwallet)
 {
     UniValue ret(UniValue::VOBJ);
     if (!verbose) {
@@ -11,29 +11,53 @@ UniValue mnToJSON(uint256 const & nodeId, CMasternode const& node, bool verbose)
     }
     else {
         UniValue obj(UniValue::VOBJ);
-        obj.pushKV("ownerAuthAddress", EncodeDestination(
-                node.ownerType == 1 ? CTxDestination(PKHash(node.ownerAuthAddress)) : CTxDestination(
-                        WitnessV0KeyHash(node.ownerAuthAddress))));
-        obj.pushKV("operatorAuthAddress", EncodeDestination(
-                node.operatorType == 1 ? CTxDestination(PKHash(node.operatorAuthAddress)) : CTxDestination(
-                        WitnessV0KeyHash(node.operatorAuthAddress))));
+        CTxDestination ownerDest = node.ownerType == 1 ? CTxDestination(PKHash(node.ownerAuthAddress)) :
+                CTxDestination(WitnessV0KeyHash(node.ownerAuthAddress));
+        obj.pushKV("ownerAuthAddress", EncodeDestination(ownerDest));
+        CTxDestination operatorDest = node.operatorType == 1 ? CTxDestination(PKHash(node.operatorAuthAddress)) :
+                                      CTxDestination(WitnessV0KeyHash(node.operatorAuthAddress));
+        obj.pushKV("operatorAuthAddress", EncodeDestination(operatorDest));
 
         obj.pushKV("creationHeight", node.creationHeight);
         obj.pushKV("resignHeight", node.resignHeight);
         obj.pushKV("resignTx", node.resignTx.GetHex());
-        obj.pushKV("banHeight", node.banHeight);
         obj.pushKV("banTx", node.banTx.GetHex());
         obj.pushKV("state", CMasternode::GetHumanReadableState(node.GetState()));
         obj.pushKV("mintedBlocks", (uint64_t) node.mintedBlocks);
-        int height;
-        {
-            LOCK(cs_main);
-            height = ChainActive().Height();
+        isminetype ownerMine = IsMineCached(*pwallet, ownerDest);
+        obj.pushKV("ownerIsMine", bool(ownerMine & ISMINE_SPENDABLE));
+        isminetype operatorMine = IsMineCached(*pwallet, operatorDest);
+        obj.pushKV("operatorIsMine", bool(operatorMine & ISMINE_SPENDABLE));
+        bool localMasternode{false};
+        for (const auto& entry : mnIds) {
+            if (entry.first == node.operatorAuthAddress) {
+                localMasternode = true;
+            }
         }
+        obj.pushKV("localMasternode", localMasternode);
+
+        auto currentHeight = ChainActive().Height();
+        uint16_t timelock = pcustomcsview->GetTimelock(nodeId, node, currentHeight);
 
         // Only get targetMultiplier for active masternodes
         if (node.IsActive()) {
-            obj.pushKV("targetMultiplier", pos::CalcCoinDayWeight(Params().GetConsensus(), node, GetTime(), height).getdouble());
+            // Get block times with next block as height
+            const auto subNodesBlockTime = pcustomcsview->GetBlockTimes(node.operatorAuthAddress, currentHeight + 1, node.creationHeight, timelock);
+
+            if (currentHeight >= Params().GetConsensus().EunosPayaHeight) {
+                const uint8_t loops = timelock == CMasternode::TENYEAR ? 4 : timelock == CMasternode::FIVEYEAR ? 3 : 2;
+                UniValue multipliers(UniValue::VARR);
+                for (uint8_t i{0}; i < loops; ++i) {
+                    multipliers.push_back(pos::CalcCoinDayWeight(Params().GetConsensus(), GetTime(), subNodesBlockTime[i]).getdouble());
+                }
+                obj.pushKV("targetMultipliers", multipliers);
+            } else {
+                obj.pushKV("targetMultiplier", pos::CalcCoinDayWeight(Params().GetConsensus(), GetTime(),subNodesBlockTime[0]).getdouble());
+            }
+        }
+
+        if (timelock) {
+            obj.pushKV("timelock", strprintf("%d years", timelock / 52));
         }
 
         /// @todo add unlock height and|or real resign height
@@ -73,6 +97,10 @@ UniValue createmasternode(const JSONRPCRequest& request)
                            },
                        },
                    },
+                   {"timelock", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "Defaults to no timelock period so masternode can be resigned once active. To set a timelock period\n"
+                                                                              "specify either FIVEYEARTIMELOCK or TENYEARTIMELOCK to create a masternode that cannot be resigned for\n"
+                                                                              "five or ten years and will have 1.5x or 2.0 the staking power respectively. Be aware that this means\n"
+                                                                              "that you cannot spend the collateral used to create a masternode for whatever period is specified."},
                },
                RPCResult{
                        "\"hash\"                  (string) The hex-encoded hash of broadcasted transaction\n"
@@ -97,9 +125,29 @@ UniValue createmasternode(const JSONRPCRequest& request)
     }
 
     std::string ownerAddress = request.params[0].getValStr();
-    std::string operatorAddress = request.params.size() > 1 ? request.params[1].getValStr() : ownerAddress;
+    std::string operatorAddress = request.params.size() > 1 && !request.params[1].getValStr().empty() ? request.params[1].getValStr() : ownerAddress;
     CTxDestination ownerDest = DecodeDestination(ownerAddress); // type will be checked on apply/create
     CTxDestination operatorDest = DecodeDestination(operatorAddress);
+
+    bool eunosPaya;
+    {
+        LOCK(cs_main);
+        eunosPaya = ::ChainActive().Tip()->height >= Params().GetConsensus().EunosPayaHeight;
+    }
+
+    // Get timelock if any
+    uint16_t timelock{0};
+    if (!request.params[3].isNull()) {
+        if (!eunosPaya) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Timelock cannot be specified before EunosPaya hard fork");
+        }
+        std::string timelockStr = request.params[3].getValStr();
+        if (timelockStr == "FIVEYEARTIMELOCK") {
+            timelock = CMasternode::FIVEYEAR;
+        } else if (timelockStr == "TENYEARTIMELOCK") {
+            timelock = CMasternode::TENYEAR;
+        }
+    }
 
     // check type here cause need operatorAuthKey. all other validation (for owner for ex.) in further apply/create
     if (operatorDest.which() != 1 && operatorDest.which() != 4) {
@@ -115,6 +163,10 @@ UniValue createmasternode(const JSONRPCRequest& request)
     CDataStream metadata(DfTxMarker, SER_NETWORK, PROTOCOL_VERSION);
     metadata << static_cast<unsigned char>(CustomTxType::CreateMasternode)
              << static_cast<char>(operatorDest.which()) << operatorAuthKey;
+
+    if (eunosPaya) {
+        metadata << timelock;
+    }
 
     CScript scriptMeta;
     scriptMeta << OP_RETURN << ToByteVector(metadata);
@@ -146,7 +198,11 @@ UniValue createmasternode(const JSONRPCRequest& request)
         CCoinsViewCache coins(&::ChainstateActive().CoinsTip());
         if (optAuthTx)
             AddCoins(coins, *optAuthTx, targetHeight);
-        auto metadata = ToByteVector(CDataStream{SER_NETWORK, PROTOCOL_VERSION, static_cast<char>(operatorDest.which()), operatorAuthKey});
+        auto stream = CDataStream{SER_NETWORK, PROTOCOL_VERSION, static_cast<char>(operatorDest.which()), operatorAuthKey};
+        if (eunosPaya) {
+            stream << timelock;
+        }
+        auto metadata = ToByteVector(stream);
         execTestTx(CTransaction(rawTx), targetHeight, metadata, CCreateMasterNodeMessage{}, coins);
     }
     return signsend(rawTx, pwallet, optAuthTx)->GetHash().GetHex();
@@ -246,6 +302,8 @@ UniValue resignmasternode(const JSONRPCRequest& request)
 
 UniValue listmasternodes(const JSONRPCRequest& request)
 {
+    CWallet* const pwallet = GetWallet(request);
+
     RPCHelpMan{"listmasternodes",
                "\nReturns information about specified masternodes (or all, if list of ids is empty).\n",
                {
@@ -304,9 +362,11 @@ UniValue listmasternodes(const JSONRPCRequest& request)
 
     UniValue ret(UniValue::VOBJ);
 
+    const auto mnIds = pcustomcsview->GetOperatorsMulti();
+
     LOCK(cs_main);
     pcustomcsview->ForEachMasternode([&](uint256 const& nodeId, CMasternode node) {
-        ret.pushKVs(mnToJSON(nodeId, node, verbose));
+        ret.pushKVs(mnToJSON(nodeId, node, verbose, mnIds, pwallet));
         limit--;
         return limit != 0;
     }, start);
@@ -316,6 +376,8 @@ UniValue listmasternodes(const JSONRPCRequest& request)
 
 UniValue getmasternode(const JSONRPCRequest& request)
 {
+    CWallet* const pwallet = GetWallet(request);
+
     RPCHelpMan{"getmasternode",
                "\nReturns information about specified masternode.\n",
                {
@@ -332,10 +394,12 @@ UniValue getmasternode(const JSONRPCRequest& request)
 
     uint256 id = ParseHashV(request.params[0], "masternode id");
 
+    const auto mnIds = pcustomcsview->GetOperatorsMulti();
+
     LOCK(cs_main);
     auto node = pcustomcsview->GetMasternode(id);
     if (node) {
-        return mnToJSON(id, *node, true); // or maybe just node, w/o id?
+        return mnToJSON(id, *node, true, mnIds, pwallet); // or maybe just node, w/o id?
     }
     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Masternode not found");
 }
@@ -357,8 +421,8 @@ UniValue getmasternodeblocks(const JSONRPCRequest& request) {
                        "{...}     (object) Json object with block hash and height information\n"
                },
                RPCExamples{
-                       HelpExampleCli("getmasternodeblocks", "{\"ownerAddress\":\"dPyup5C9hfRd2SUC1p3a7VcjcNuGSXa9bT\"}")
-                       + HelpExampleRpc("getmasternodeblocks", "{\"ownerAddress\":\"dPyup5C9hfRd2SUC1p3a7VcjcNuGSXa9bT\"}")
+                       HelpExampleCli("getmasternodeblocks", R"('{"ownerAddress":"dPyup5C9hfRd2SUC1p3a7VcjcNuGSXa9bT"}')")
+                       + HelpExampleRpc("getmasternodeblocks", R"({"ownerAddress":"dPyup5C9hfRd2SUC1p3a7VcjcNuGSXa9bT"})")
                },
     }.Check(request);
 
@@ -450,83 +514,12 @@ UniValue getmasternodeblocks(const JSONRPCRequest& request) {
     auto tip = ::ChainActive()[std::min(lastHeight, uint64_t(Params().GetConsensus().DakotaCrescentHeight)) - 1];
 
     for (; tip && tip->height > creationHeight && depth > 0; tip = tip->pprev, --depth) {
-        CKeyID minter;
-        if (tip->GetBlockHeader().ExtractMinterKey(minter)) {
-            auto id = pcustomcsview->GetMasternodeIdByOperator(minter);
-            if (id && *id == mn_id) {
-                ret.pushKV(std::to_string(tip->height), tip->GetBlockHash().ToString());
-            }
+        auto id = pcustomcsview->GetMasternodeIdByOperator(tip->minterKey());
+        if (id && *id == mn_id) {
+            ret.pushKV(std::to_string(tip->height), tip->GetBlockHash().ToString());
         }
     }
 
-    return ret;
-}
-
-UniValue listcriminalproofs(const JSONRPCRequest& request)
-{
-    RPCHelpMan{"listcriminalproofs",
-               "\nReturns information about criminal proofs (pairs of signed blocks by one MN from different forks).\n",
-               {
-                    {"pagination", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "",
-                         {
-                             {"start", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED,
-                              "Optional first key to iterate from, in lexicographical order."
-                              "Typically it's set to last ID from previous request."},
-                             {"including_start", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED,
-                              "If true, then iterate including starting position. False by default"},
-                             {"limit", RPCArg::Type::NUM, RPCArg::Optional::OMITTED,
-                              "Maximum number of orders to return, 100 by default"},
-                         },
-                    },
-               },
-               RPCResult{
-                       "{id:{block1, block2},...}     (array) Json objects with block pairs\n"
-               },
-               RPCExamples{
-                       HelpExampleCli("listcriminalproofs", "")
-                       + HelpExampleRpc("listcriminalproofs", "")
-               },
-    }.Check(request);
-
-    // parse pagination
-    size_t limit = 100;
-    uint256 start = {};
-    bool including_start = true;
-    {
-        if (request.params.size() > 0) {
-            UniValue paginationObj = request.params[0].get_obj();
-            if (!paginationObj["limit"].isNull()) {
-                limit = (size_t) paginationObj["limit"].get_int64();
-            }
-            if (!paginationObj["start"].isNull()) {
-                including_start = false;
-                start = ParseHashV(paginationObj["start"], "start");
-            }
-            if (!paginationObj["including_start"].isNull()) {
-                including_start = paginationObj["including_start"].getBool();
-            }
-            if (!including_start) {
-                start = ArithToUint256(UintToArith256(start) + arith_uint256{1});
-            }
-        }
-        if (limit == 0) {
-            limit = std::numeric_limits<decltype(limit)>::max();
-        }
-    }
-
-    LOCK(cs_main);
-
-    UniValue ret(UniValue::VOBJ);
-    auto const proofs = pcriminals->GetUnpunishedCriminals();
-    for (auto it = proofs.lower_bound(start); it != proofs.end() && limit != 0; ++it, --limit) {
-        UniValue obj(UniValue::VOBJ);
-        obj.pushKV("hash1", it->second.blockHeader.GetHash().ToString());
-        obj.pushKV("height1", it->second.blockHeader.height);
-        obj.pushKV("hash2", it->second.conflictBlockHeader.GetHash().ToString());
-        obj.pushKV("height2", it->second.conflictBlockHeader.height);
-        obj.pushKV("mintedBlocks", it->second.blockHeader.mintedBlocks);
-        ret.pushKV(it->first.ToString(), obj);
-    }
     return ret;
 }
 
@@ -624,15 +617,11 @@ UniValue getactivemasternodecount(const JSONRPCRequest& request)
 
     std::set<uint256> masternodes;
 
+    LOCK(cs_main);
     // Get active MNs from last week's worth of blocks
     for (int i{0}; pindex && i < blockSample; pindex = pindex->pprev, ++i) {
-        CKeyID minter;
-        if (pindex->GetBlockHeader().ExtractMinterKey(minter)) {
-            LOCK(cs_main);
-            auto id = pcustomcsview->GetMasternodeIdByOperator(minter);
-            if (id) {
-                masternodes.insert(*id);
-            }
+        if (auto id = pcustomcsview->GetMasternodeIdByOperator(pindex->minterKey())) {
+            masternodes.insert(*id);
         }
     }
 
@@ -657,6 +646,7 @@ UniValue listanchors(const JSONRPCRequest& request)
     }.Check(request);
 
     auto locked_chain = pwallet->chain().lock();
+    LOCK(locked_chain->mutex());
 
     auto confirms = pcustomcsview->CAnchorConfirmsView::GetAnchorConfirmData();
 
@@ -693,7 +683,6 @@ static const CRPCCommand commands[] =
     {"masternodes", "listmasternodes",       &listmasternodes,       {"pagination", "verbose"}},
     {"masternodes", "getmasternode",         &getmasternode,         {"mn_id"}},
     {"masternodes", "getmasternodeblocks",   &getmasternodeblocks,   {"identifier", "depth"}},
-    {"masternodes", "listcriminalproofs",    &listcriminalproofs,    {}},
     {"masternodes", "getanchorteams",        &getanchorteams,        {"blockHeight"}},
     {"masternodes", "getactivemasternodecount",  &getactivemasternodecount,  {"blockCount"}},
     {"masternodes", "listanchors",           &listanchors,           {}},

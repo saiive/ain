@@ -164,18 +164,10 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* tip, const CBlockIn
             {
                 CAmount subsidy = CalculateCoinbaseReward(blockReward, kv.second);
 
-                // Swap, futures and options all burnt at the moment.
-                if (kv.first == CommunityAccountType::Swap ||
-                    kv.first == CommunityAccountType::Futures ||
-                    kv.first == CommunityAccountType::Options ||
-                    kv.first == CommunityAccountType::Unallocated)
-                {
-                    burnt += subsidy;
-                }
-                else
-                {
-                    // Anchor and LP incentive
+                if (kv.first == CommunityAccountType::AnchorReward) {
                     nonutxo.pushKV(GetCommunityAccountName(kv.first), ValueFromAmount(subsidy));
+                } else {
+                    burnt += subsidy; // Everything else goes into burnt
                 }
             }
 
@@ -1360,11 +1352,6 @@ UniValue getblockchaininfo(const JSONRPCRequest& request)
 
     const Consensus::Params& consensusParams = Params().GetConsensus();
     UniValue softforks(UniValue::VOBJ);
-    BuriedForkDescPushBack(softforks, "bip34", consensusParams.BIP34Height);
-    BuriedForkDescPushBack(softforks, "bip66", consensusParams.BIP66Height);
-    BuriedForkDescPushBack(softforks, "bip65", consensusParams.BIP65Height);
-    BuriedForkDescPushBack(softforks, "csv", consensusParams.CSVHeight);
-    BuriedForkDescPushBack(softforks, "segwit", consensusParams.SegwitHeight);
     BuriedForkDescPushBack(softforks, "amk", consensusParams.AMKHeight);
     BuriedForkDescPushBack(softforks, "bayfront", consensusParams.BayfrontHeight);
     BuriedForkDescPushBack(softforks, "clarkequay", consensusParams.ClarkeQuayHeight);
