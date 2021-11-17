@@ -239,7 +239,11 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
         coinbaseTx.vout.resize(2);
 
         // Explicitly set miner reward
-        coinbaseTx.vout[0].nValue = CalculateCoinbaseReward(blockReward, consensus.dist.masternode);
+        if (nHeight >= consensus.FortCanningHeight) {
+            coinbaseTx.vout[0].nValue = nFees + CalculateCoinbaseReward(blockReward, consensus.dist.masternode);
+        } else {
+            coinbaseTx.vout[0].nValue = CalculateCoinbaseReward(blockReward, consensus.dist.masternode);
+        }
 
         // Community payment always expected
         coinbaseTx.vout[1].scriptPubKey = consensus.foundationShareScript;
@@ -667,6 +671,31 @@ namespace pos {
         return Status::stakeReady;
     }
 
+    // This is an internal only method to ignore some mints, even though it's valid. 
+    // This is done to workaround https://github.com/DeFiCh/ain/issues/693, so on specific bug condition, 
+    // i.e, when subnode 1 stakes before subnode 0 on Eunos Paya+ (in particular to target pre-Eunos Paya masternodes that's carried over), it's ignored.
+    // in order to give time for subnode 0 to first succeed and create a record. 
+    // 
+    // This is done to ensure that we can workaround the bug, without waiting for consensus change in next update.
+    // This shouldn't have any effect on the mining, even though we ignore some successful hashes since the
+    // Coinages are retained and keep growing. Once subnode 0 mines, subnode 1 should stake again shortly with 
+    // higher coinage / TM.
+    //
+    bool shouldIgnoreMint(uint8_t subNode, int64_t blockHeight, int64_t creationHeight, 
+        const std::vector<int64_t>& subNodesBlockTime, const CChainParams& chainParams) {
+            
+        auto eunosPayaHeight = chainParams.GetConsensus().EunosPayaHeight;
+        if (blockHeight < eunosPayaHeight || creationHeight >= eunosPayaHeight) {
+            return false;
+        }
+
+        if (subNode == 1 && subNodesBlockTime[0] == subNodesBlockTime[1]) {
+            LogPrint(BCLog::STAKING, "MakeStake: kernel ignored\n");
+            return true;
+        }
+        return false;
+    }
+
     Staker::Status Staker::stake(const CChainParams& chainparams, const ThreadStaker::Args& args) {
 
         bool found = false;
@@ -701,7 +730,18 @@ namespace pos {
             mintedBlocks = nodePtr->mintedBlocks;
             if (args.coinbaseScript.empty()) {
                 // this is safe cause MN was found
-                scriptPubKey = GetScriptForDestination(nodePtr->ownerType == 1 ? CTxDestination(PKHash(nodePtr->ownerAuthAddress)) : CTxDestination(WitnessV0KeyHash(nodePtr->ownerAuthAddress)));
+                if (tip->height >= chainparams.GetConsensus().FortCanningHeight && nodePtr->rewardAddressType != 0) {
+                    scriptPubKey = GetScriptForDestination(nodePtr->rewardAddressType == PKHashType ?
+                        CTxDestination(PKHash(nodePtr->rewardAddress)) :
+                        CTxDestination(WitnessV0KeyHash(nodePtr->rewardAddress))
+                    );
+                }
+                else {
+                    scriptPubKey = GetScriptForDestination(nodePtr->ownerType == PKHashType ?
+                        CTxDestination(PKHash(nodePtr->ownerAuthAddress)) :
+                        CTxDestination(WitnessV0KeyHash(nodePtr->ownerAuthAddress))
+                    );
+                }
             } else {
                 scriptPubKey = args.coinbaseScript;
             }
@@ -751,6 +791,8 @@ namespace pos {
                     if (pos::CheckKernelHash(stakeModifier, nBits, creationHeight, blockTime, blockHeight, masternodeID, chainparams.GetConsensus(),
                                              subNodesBlockTime, timelock, ctxState))
                     {
+                        if (shouldIgnoreMint(ctxState.subNode, blockHeight, creationHeight, subNodesBlockTime, chainparams)) 
+                            break;
                         LogPrint(BCLog::STAKING, "MakeStake: kernel found\n");
 
                         found = true;
@@ -774,6 +816,8 @@ namespace pos {
                     if (pos::CheckKernelHash(stakeModifier, nBits, creationHeight, blockTime, blockHeight, masternodeID, chainparams.GetConsensus(),
                                              subNodesBlockTime, timelock, ctxState))
                     {
+                        if (shouldIgnoreMint(ctxState.subNode, blockHeight, creationHeight, subNodesBlockTime, chainparams)) 
+                            break;
                         LogPrint(BCLog::STAKING, "MakeStake: kernel found\n");
 
                         found = true;
@@ -927,6 +971,7 @@ void ThreadStaker::operator()(std::vector<ThreadStaker::Args> args, CChainParams
                 LogPrintf("ThreadStaker: (%s) runtime error: %s\n", e.what(), operatorName);
 
                 // Could be failed TX in mempool, wipe mempool and allow loop to continue.
+                LOCK(cs_main);
                 mempool.clear();
             }
 
