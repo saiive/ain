@@ -767,7 +767,7 @@ UniValue listlatestrawprices(const JSONRPCRequest &request) {
         try {
             tokenPair = DecodeTokenCurrencyPair(request.params[0]);
         }
-        catch {
+        catch(...) {
 
         }
     }
