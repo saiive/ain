@@ -280,6 +280,8 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "spv_listanchors", 1, "maxBtcHeight" },
     { "spv_listanchors", 2, "minConfs" },
     { "spv_listanchors", 3, "maxConfs" },
+    { "spv_listanchors", 4, "startBtcHeight" },
+    { "spv_listanchors", 5, "limit" },
     { "spv_sendtoaddress", 1, "amount" },
     { "spv_sendtoaddress", 2, "feerate" },
     { "spv_listreceivedbyaddress", 0, "minconf" },
@@ -293,11 +295,14 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "compositeswap", 0, "metadata" },
     { "compositeswap", 1, "inputs" },
     { "testpoolswap", 0, "metadata"},
+    { "testpoolswap", 2, "verbose"},
     { "listpoolshares", 0, "pagination" },
     { "listpoolshares", 1, "verbose" },
     { "listpoolshares", 2, "is_mine_only" },
 
     { "listaccounthistory", 1, "options" },
+    { "getaccounthistory", 1, "blockHeight" },
+    { "getaccounthistory", 2, "txn" },
     { "listburnhistory", 0, "options" },
     { "accounthistorycount", 1, "options" },
 
