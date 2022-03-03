@@ -744,7 +744,7 @@ UniValue listlatestrawprices(const JSONRPCRequest &request) {
     // parse pagination
     COracleId start = {};
     bool including_start = true;
-    size_t limit = 100;
+    size_t limit = 1000;
     {
         if (request.params.size() > 1){
             UniValue paginationObj = request.params[1].get_obj();
@@ -764,7 +764,12 @@ UniValue listlatestrawprices(const JSONRPCRequest &request) {
     }
 
     if (!request.params.empty()) {
-        tokenPair = DecodeTokenCurrencyPair(request.params[0]);
+        try {
+            tokenPair = DecodeTokenCurrencyPair(request.params[0]);
+        }
+        catch(...) {
+
+        }
     }
 
     LOCK(cs_main);
