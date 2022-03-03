@@ -25,16 +25,16 @@
 
 #include <string>
 
-std::pair<std::string, std::string> SplitAmount(std::string const & output)
+std::pair<std::string, std::string> SplitAmount(std::string const& output)
 {
     const unsigned char TOKEN_SPLITTER = '@';
     size_t pos = output.rfind(TOKEN_SPLITTER);
-    std::string token_id = (pos != std::string::npos) ? output.substr(pos+1) : "";
+    std::string token_id = (pos != std::string::npos) ? output.substr(pos + 1) : "";
     std::string amount = (pos != std::string::npos) ? output.substr(0, pos) : output;
-    return { amount, token_id };
+    return {amount, token_id};
 }
 
-ResVal<std::pair<CAmount, std::string>> ParseTokenAmount(std::string const & tokenAmount)
+ResVal<std::pair<CAmount, std::string>> ParseTokenAmount(std::string const& tokenAmount)
 {
     const auto strs = SplitAmount(tokenAmount);
 
@@ -47,7 +47,7 @@ ResVal<std::pair<CAmount, std::string>> ParseTokenAmount(std::string const & tok
     return {{amount, strs.second}, Res::Ok()};
 }
 
-ResVal<CTokenAmount> GuessTokenAmount(interfaces::Chain const & chain, std::string const & tokenAmount)
+ResVal<CTokenAmount> GuessTokenAmount(interfaces::Chain const& chain, std::string const& tokenAmount)
 {
     const auto parsed = ParseTokenAmount(tokenAmount);
     if (!parsed.ok) {
@@ -56,7 +56,7 @@ ResVal<CTokenAmount> GuessTokenAmount(interfaces::Chain const & chain, std::stri
     DCT_ID tokenId;
     try {
         // try to parse it as a number, in a case DCT_ID was written
-        tokenId.v = (uint32_t) std::stoul(parsed.val->second);
+        tokenId.v = (uint32_t)std::stoul(parsed.val->second);
         return {{tokenId, parsed.val->first}, Res::Ok()};
     } catch (...) {
         // assuming it's token symbol, read DCT_ID from DB
@@ -109,7 +109,7 @@ int DecodeScriptTxId(const std::string& str, CParserResults result)
     return 0;
 }
 
-CTokenAmount DecodeAmount(interfaces::Chain const & chain, UniValue const& amountUni, std::string const& name)
+CTokenAmount DecodeAmount(interfaces::Chain const& chain, UniValue const& amountUni, std::string const& name)
 {
     // decode amounts
     std::string strAmount;
@@ -125,7 +125,7 @@ CTokenAmount DecodeAmount(interfaces::Chain const & chain, UniValue const& amoun
     });
 }
 
-CBalances DecodeAmounts(interfaces::Chain const & chain, UniValue const& amountsUni, std::string const& name)
+CBalances DecodeAmounts(interfaces::Chain const& chain, UniValue const& amountsUni, std::string const& name)
 {
     // decode amounts
     CBalances amounts;
@@ -144,7 +144,7 @@ CBalances DecodeAmounts(interfaces::Chain const & chain, UniValue const& amounts
 // "addr": "123.0@0",
 // "addr": "123.0@DFI",
 // "addr": ["123.0@DFI", "123.0@0", ...]
-CAccounts DecodeRecipients(interfaces::Chain const & chain, UniValue const& sendTo)
+CAccounts DecodeRecipients(interfaces::Chain const& chain, UniValue const& sendTo)
 {
     CAccounts recipients;
     for (const std::string& addr : sendTo.getKeys()) {
@@ -159,7 +159,7 @@ CAccounts DecodeRecipients(interfaces::Chain const & chain, UniValue const& send
     return recipients;
 }
 
-CMutableTransaction ConstructTransaction(const UniValue& inputs_in, const UniValue& outputs_in, const UniValue& locktime, bool rbf, interfaces::Chain & chain)
+CMutableTransaction ConstructTransaction(const UniValue& inputs_in, const UniValue& outputs_in, const UniValue& locktime, bool rbf, interfaces::Chain& chain)
 {
     if (inputs_in.isNull() || outputs_in.isNull())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, arguments 1 and 2 must be non-null");
@@ -245,7 +245,15 @@ CMutableTransaction ConstructTransaction(const UniValue& inputs_in, const UniVal
             has_data = true;
             std::vector<unsigned char> data = ParseHexV(outputs[name_].getValStr(), "Data");
 
-            CTxOut out(0, CScript() << OP_RETURN << data);
+            CAmount nValue = 0;
+            if (outputs[name_].exists("amount")) {
+                CAmount amount{0};
+                auto sAmount = outputs[name_]["amount"].get_str();
+                if (!ParseFixedPoint(sAmount, 8, &amount))
+                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Cannot parse amount ") + name_);
+                nValue = amount;
+            }
+            CTxOut out(nValue, CScript() << OP_RETURN << data);
             rawTx.vout.push_back(out);
         } else {
             CTxDestination destination = DecodeDestination(name_); // it will be more clear to decode it straight to the CScript, but lets keep destination for tests compatibility
@@ -258,7 +266,7 @@ CMutableTransaction ConstructTransaction(const UniValue& inputs_in, const UniVal
             CScript scriptPubKey = GetScriptForDestination(destination);
 
             auto amounts = DecodeAmounts(chain, outputs[name_], name_);
-            for (auto const & kv : amounts.balances) {
+            for (auto const& kv : amounts.balances) {
                 CTxOut out(kv.second, scriptPubKey, kv.first);
                 rawTx.vout.push_back(out);
             }
@@ -324,8 +332,8 @@ UniValue SignTransaction(CMutableTransaction& mtx, const UniValue& prevTxsUnival
                 auto coin = coins.find(out);
                 if (coin != coins.end() && !coin->second.IsSpent() && coin->second.out.scriptPubKey != scriptPubKey) {
                     std::string err("Previous output scriptPubKey mismatch:\n");
-                    err = err + ScriptToAsmStr(coin->second.out.scriptPubKey) + "\nvs:\n"+
-                        ScriptToAsmStr(scriptPubKey);
+                    err = err + ScriptToAsmStr(coin->second.out.scriptPubKey) + "\nvs:\n" +
+                          ScriptToAsmStr(scriptPubKey);
                     throw JSONRPCError(RPC_DESERIALIZATION_ERROR, err);
                 }
                 Coin newcoin;
@@ -344,7 +352,8 @@ UniValue SignTransaction(CMutableTransaction& mtx, const UniValue& prevTxsUnival
                     {
                         {"redeemScript", UniValueType(UniValue::VSTR)},
                         {"witnessScript", UniValueType(UniValue::VSTR)},
-                    }, true);
+                    },
+                    true);
                 UniValue rs = find_value(prevOut, "redeemScript");
                 if (!rs.isNull()) {
                     std::vector<unsigned char> rsData(ParseHexV(rs, "redeemScript"));
@@ -427,4 +436,3 @@ UniValue SignTransaction(CMutableTransaction& mtx, const UniValue& prevTxsUnival
 
     return result;
 }
-

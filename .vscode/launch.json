@@ -16,9 +16,10 @@
                 "-rpcpassword=test",
                 "-rpcbind=0.0.0.0",
                 "-rpcallowip=0.0.0.0/0",
-                "-testnet",
-                "-txindex",
-                "-logips",
+                "-regtest",
+                "-reindex",
+                // "-txindex",
+                // "-logips",
                 
             ],
             "stopAtEntry": false,
