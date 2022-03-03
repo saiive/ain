@@ -18,6 +18,7 @@
                 "-rpcallowip=0.0.0.0/0",
                 "-regtest",
                 "-reindex",
+                "-datadir=/mnt/c/"
                 // "-txindex",
                 // "-logips",
                 

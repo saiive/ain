@@ -242,19 +242,30 @@ CMutableTransaction ConstructTransaction(const UniValue& inputs_in, const UniVal
             if (has_data) {
                 throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, duplicate key: data");
             }
-            has_data = true;
-            std::vector<unsigned char> data = ParseHexV(outputs[name_].getValStr(), "Data");
+             has_data = true;
+            const bool data_is_obj = outputs[name_].isObject();
 
-            CAmount nValue = 0;
-            if (outputs[name_].exists("amount")) {
-                CAmount amount{0};
-                auto sAmount = outputs[name_]["amount"].get_str();
-                if (!ParseFixedPoint(sAmount, 8, &amount))
-                    throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Cannot parse amount ") + name_);
-                nValue = amount;
+            if(!data_is_obj) {
+                std::vector<unsigned char> data = ParseHexV(outputs[name_].getValStr(), "Data");
+                
+                CTxOut out(0, CScript() << OP_RETURN << data);
+                rawTx.vout.push_back(out);
             }
-            CTxOut out(nValue, CScript() << OP_RETURN << data);
-            rawTx.vout.push_back(out);
+            else {
+                auto data_obj = outputs[name_];
+                std::vector<unsigned char> data = ParseHexV(data_obj["script"].getValStr(), "Data");
+                
+                CAmount nValue = 0;
+                if (data_obj.exists("amount")) {
+                    CAmount amount{0};
+                    auto sAmount = data_obj["amount"].get_str();
+                    if (!ParseFixedPoint(sAmount, 8, &amount))
+                        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string("Cannot parse amount ") + name_);
+                    nValue = amount;
+                }
+                CTxOut out(nValue, CScript() << OP_RETURN << data);
+                rawTx.vout.push_back(out);
+            }
         } else {
             CTxDestination destination = DecodeDestination(name_); // it will be more clear to decode it straight to the CScript, but lets keep destination for tests compatibility
             if (!IsValidDestination(destination)) {
