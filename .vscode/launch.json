@@ -36,6 +36,30 @@
                 }
             ],
             "logging": { "engineLogging": true, "trace": true, "traceResponse": true }
+        },
+        {
+            "name": "(gdb) Launch Tests",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/test/test_defi",
+            "args": [
+                "--log_level=all",
+                "--run_test=rpc_tests/rpc_createraw_extended",
+                
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "logging": { "engineLogging": true, "trace": true, "traceResponse": true }
         }
     ]
 }
